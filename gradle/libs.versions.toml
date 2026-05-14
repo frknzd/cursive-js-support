@@ -1,5 +1,9 @@
 [versions]
-junit = "4.13.2"
+junit   = "4.13.2"
+jackson = "2.17.2"
+ednJava = "0.7.1"
 
 [libraries]
-junit = { module = "junit:junit", version.ref = "junit" }
+junit          = { module = "junit:junit",                                        version.ref = "junit"   }
+jackson-kotlin = { module = "com.fasterxml.jackson.module:jackson-module-kotlin", version.ref = "jackson" }
+edn-java       = { module = "us.bpsm:edn-java",                                   version.ref = "ednJava" }
