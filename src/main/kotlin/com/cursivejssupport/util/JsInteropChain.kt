@@ -39,4 +39,15 @@ object JsInteropChain {
 
     fun pathAfterJsPrefixTrimmed(userText: String): String? =
         pathAfterJsPrefixRaw(userText)?.trimEnd('.')
+
+    /**
+     * When Cursive dummy PSI drops a trailing `.` from the effective `js/...` slice but the editor caret
+     * sits immediately after `.`, treat the path as dot-terminated for `MembersAfterGlobal` routing.
+     */
+    fun reconcileJsPathRawWithTrailingEditorDot(pathRaw: String, editorCharBeforeCaretIsDot: Boolean): String =
+        if (pathRaw.isNotEmpty() && !pathRaw.endsWith(".") && editorCharBeforeCaretIsDot) {
+            "$pathRaw."
+        } else {
+            pathRaw
+        }
 }

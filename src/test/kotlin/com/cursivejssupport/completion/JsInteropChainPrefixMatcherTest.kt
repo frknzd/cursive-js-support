@@ -3,7 +3,6 @@ package com.cursivejssupport.completion
 import com.intellij.codeInsight.completion.CompletionUtilCore
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -26,8 +25,10 @@ class JsInteropChainPrefixMatcherTest {
     }
 
     @Test
-    fun `leading paren is not part of matcher input document layer normalizes`() {
-        assertNull(JsInteropChainPrefixMatcher.fromEffectiveJs("(js/document.cre"))
+    fun `leading list paren before js is normalized for matcher`() {
+        val m = JsInteropChainPrefixMatcher.fromEffectiveJs("(js/document.cre")
+        assertNotNull(m)
+        assertTrue(m!!.prefixMatches("js/document.createRange"))
     }
 
     @Test

@@ -28,6 +28,8 @@ class JsSymbolIndex {
 
     // CHANGED: Now maps PackageName -> (ExportName -> Location)
     private val npmExports = ConcurrentHashMap<String, MutableMap<String, JsLocation?>>()
+    /** Export name → TypeScript type name (from parsed .d.ts) for npm member completion. */
+    private val npmExportTypes = ConcurrentHashMap<String, MutableMap<String, String>>()
 
     /** Member name → up to N sample (declaring interface, first overload) for fast completion when receiver type is unknown. */
     private val memberSamples = ConcurrentHashMap<String, MutableList<Pair<String, JsMember>>>()
@@ -74,10 +76,18 @@ class JsSymbolIndex {
         }
 
         val exports = mutableMapOf<String, JsLocation?>()
+        val exportTypes = npmExportTypes.computeIfAbsent(packageName) { ConcurrentHashMap() }
 
         // Extract locations for all exports
-        symbols.variables.forEach { (name, info) -> exports[name] = info.location }
-        symbols.functions.forEach { (name, overloads) -> exports[name] = overloads.firstOrNull()?.location }
+        symbols.variables.forEach { (name, info) ->
+            exports[name] = info.location
+            exportTypes[name] = info.type
+        }
+        symbols.functions.forEach { (name, overloads) ->
+            exports[name] = overloads.firstOrNull()?.location
+            val m = overloads.firstOrNull()
+            exportTypes[name] = m?.returns?.takeIf { it.isNotBlank() } ?: "Function"
+        }
 
         if (exports.isNotEmpty()) {
             npmExports[packageName] = exports
@@ -265,6 +275,10 @@ class JsSymbolIndex {
     fun allGlobalNames(): Collection<String> = globals.keys
     fun allFunctionNames(): Collection<String> = functions.keys
     fun npmExportNames(packageName: String): Collection<String> = npmExports[packageName]?.keys ?: emptySet()
+
+    /** TypeScript type for an npm export (e.g. `default` → `React.ComponentType`), if known from typings. */
+    fun resolveNpmExportType(packageName: String, exportName: String): String? =
+        npmExportTypes[packageName]?.get(exportName)
     fun allInterfaces(): Map<String, JsInterface> = interfaces
     fun hasMemberName(memberName: String): Boolean = memberSamples.containsKey(memberName)
     val globalCount: Int get() = globals.size

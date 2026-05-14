@@ -3,6 +3,8 @@ package com.cursivejssupport.reference
 import com.cursivejssupport.index.JsSymbolIndex
 import com.cursivejssupport.npm.NpmPackageResolver
 import com.cursivejssupport.npm.NsAliasResolver
+import com.cursivejssupport.debug.InteropLogView
+import com.cursivejssupport.util.InteropDebugLog
 import com.cursivejssupport.util.JsInteropChain
 import com.cursivejssupport.util.JsInteropPsi
 import com.cursivejssupport.util.JsResolveUtil
@@ -36,10 +38,26 @@ object JsInteropNavigation {
     private fun firstNpmExportPsi(project: Project, index: JsSymbolIndex, pkg: String, export: String): PsiElement? =
         index.getNpmExportPsiElements(project, pkg, export)?.firstOrNull()?.let { unwrapMemberNavigationWrapper(it) }
 
-    private fun firstPsiFromPackageTypingsEntry(project: Project, packageName: String): PsiElement? {
-        val ioFile = NpmPackageResolver(project).typingsEntryFile(packageName) ?: return null
-        val vf = LocalFileSystem.getInstance().findFileByPath(ioFile.absolutePath) ?: return null
-        val psiFile = PsiManager.getInstance(project).findFile(vf) ?: return null
+    private fun firstPsiFromPackageTypingsEntry(
+        project: Project,
+        packageName: String,
+        anchorFilePath: String?,
+    ): PsiElement? {
+        val ioFile = NpmPackageResolver(project).typingsEntryFile(packageName, anchorFilePath) ?: run {
+            InteropDebugLog.debug(
+                "[interop-goto] typingsEntryFile miss package=$packageName basePath=${project.basePath} " +
+                    "anchor=${anchorFilePath ?: "null"}",
+            )
+            return null
+        }
+        val vf = LocalFileSystem.getInstance().findFileByPath(ioFile.absolutePath) ?: run {
+            InteropDebugLog.info("[interop-goto] LocalFileSystem miss path=${ioFile.absolutePath}")
+            return null
+        }
+        val psiFile = PsiManager.getInstance(project).findFile(vf) ?: run {
+            InteropDebugLog.info("[interop-goto] PsiManager.findFile miss vfs=${vf.path}")
+            return null
+        }
         if (psiFile.textLength == 0) return null
         return psiFile.findElementAt(0) ?: psiFile
     }
@@ -51,27 +69,56 @@ object JsInteropNavigation {
         sourceElement: PsiElement,
         project: Project,
     ): Array<PsiElement>? {
+        InteropLogView.noteProject(project)
         val text = JsInteropPsi.gotoSymbolText(sourceElement)
+        val editorSym = JsInteropPsi.enclosingEditorSymbol(sourceElement)
+        InteropDebugLog.info(
+            "[interop-goto] resolve: gotoSymbolText='$text' editorSymNs=${editorSym?.namespace} editorSymName=${editorSym?.name} indexLoaded=${JsSymbolIndex.getInstance().isLoaded}",
+        )
         if (text.isBlank() || text.startsWith("\"") || text.startsWith("(") || text.startsWith("[")) {
+            if (text.contains("js/")) {
+                InteropDebugLog.warn(
+                    "[interop-goto] early-exit despite js/ in text (leading paren/quote/bracket?): text='$text'",
+                )
+            } else {
+                InteropDebugLog.info("[interop-goto] early-exit: blank or quoted/bracketed text='$text'")
+            }
             return null
         }
 
         if (log.isDebugEnabled) log.debug("Goto declaration at symbol text='$text'")
 
-        val file = sourceElement.containingFile ?: return null
+        val file = sourceElement.containingFile ?: run {
+            InteropDebugLog.info("[interop-goto] no containingFile")
+            return null
+        }
         val index = JsSymbolIndex.getInstance()
         val aliases = NsAliasResolver.resolveAliases(file)
+        InteropDebugLog.debug("[interop-goto] npmAliases(size=${aliases.size})=${aliases.entries.take(12)}")
 
         val namespace = if (text.contains("/")) text.substringBefore("/") else text
         val exportName = if (text.contains("/")) text.substringAfter("/") else null
 
         if (aliases.containsKey(namespace)) {
             val packageName = aliases[namespace]!!
+            val anchorPath = file.virtualFile?.path
+            InteropDebugLog.info("[interop-goto] npm-alias branch ns=$namespace -> pkg=$packageName export=$exportName")
             if (exportName != null && exportName != namespace) {
-                index.getNpmExportPsiElements(project, packageName, exportName)?.let { return it }
+                index.getNpmExportPsiElements(project, packageName, exportName)?.let {
+                    InteropDebugLog.info("[interop-goto] npm hit export=$exportName targets=${it.size}")
+                    return it
+                }
+                InteropDebugLog.info("[interop-goto] npm miss export=$exportName (no index PSI)")
             } else {
-                index.getNpmExportPsiElements(project, packageName, "default")?.let { return it }
-                    ?: firstPsiFromPackageTypingsEntry(project, packageName)?.let { return arrayOf(it) }
+                index.getNpmExportPsiElements(project, packageName, "default")?.let {
+                    InteropDebugLog.info("[interop-goto] npm default index targets=${it.size}")
+                    return it
+                }
+                firstPsiFromPackageTypingsEntry(project, packageName, anchorPath)?.let {
+                    InteropDebugLog.info("[interop-goto] npm default typings fallback vfs=${it.containingFile?.virtualFile?.path}")
+                    return arrayOf(it)
+                }
+                InteropDebugLog.info("[interop-goto] npm default miss (no index, no typings file)")
             }
         }
 
@@ -83,13 +130,32 @@ object JsInteropNavigation {
                     JsInteropChain.segmentsFromSymbol(sym?.namespace, sym?.name, text) ?: emptyList()
                 }
             }
+            InteropDebugLog.info("[interop-goto] js branch segments=$segments")
             when {
-                segments.isEmpty() -> { }
+                segments.isEmpty() -> {
+                    InteropDebugLog.info("[interop-goto] js branch: empty segments (no resolution)")
+                }
                 segments.size == 1 ->
-                    index.getGlobalPsiElements(project, segments[0])?.let { return it }
+                    index.getGlobalPsiElements(project, segments[0])?.let {
+                        InteropDebugLog.info("[interop-goto] js global '${segments[0]}' targets=${it.size}")
+                        return it
+                    } ?: InteropDebugLog.info("[interop-goto] js global '${segments[0]}' miss (no PSI)")
                 else -> {
-                    val parentType = index.resolveJsChainType(segments.dropLast(1)) ?: return null
-                    index.getMemberPsiElements(project, parentType, segments.last())?.let { return it }
+                    val parentType = index.resolveJsChainType(segments.dropLast(1)) ?: run {
+                        InteropDebugLog.info(
+                            "[interop-goto] js chain parentType miss receiver=${segments.dropLast(1)}",
+                        )
+                        return null
+                    }
+                    index.getMemberPsiElements(project, parentType, segments.last())?.let {
+                        InteropDebugLog.info(
+                            "[interop-goto] js member parentType=$parentType member=${segments.last()} targets=${it.size}",
+                        )
+                        return it
+                    }
+                    InteropDebugLog.info(
+                        "[interop-goto] js member miss parentType=$parentType member=${segments.last()}",
+                    )
                 }
             }
         }
@@ -145,10 +211,13 @@ object JsInteropNavigation {
 
             if (targets != null) {
                 if (log.isDebugEnabled) log.debug("Resolved method .$memberName to ${targets.size} target(s)")
+                InteropDebugLog.info("[interop-goto] dot-member .$memberName targets=${targets.size}")
                 return targets
             }
+            InteropDebugLog.info("[interop-goto] dot-member .$memberName no targets")
         }
 
+        InteropDebugLog.info("[interop-goto] resolve: no targets (fallthrough)")
         return null
     }
 
@@ -219,8 +288,9 @@ object JsInteropNavigation {
                 val pkg = aliases[namespace] ?: return null
                 val export = name ?: return null
                 if (index.isKnownNpmExport(pkg, export)) {
+                    val anchorPath = file.virtualFile?.path
                     val phys = firstNpmExportPsi(project, index, pkg, export)
-                        ?: firstPsiFromPackageTypingsEntry(project, pkg)
+                        ?: firstPsiFromPackageTypingsEntry(project, pkg, anchorPath)
                     JsSymbolPsiElement(
                         symbol.manager, symbol.language, export, null, null,
                         packageName = pkg, npmExportName = export, navigationTarget = phys,
@@ -232,16 +302,23 @@ object JsInteropNavigation {
                 val file = symbol.containingFile ?: return null
                 val aliases = NsAliasResolver.resolveAliases(file)
                 val pkg = aliases[text] ?: return null
-                val exportKey = when {
+                var exportKey = when {
                     index.isKnownNpmExport(pkg, "default") -> "default"
                     index.isKnownNpmExport(pkg, text) -> text
                     else -> index.npmExportNames(pkg).firstOrNull()
-                } ?: return null
-                val phys = firstNpmExportPsi(project, index, pkg, exportKey)
-                    ?: firstPsiFromPackageTypingsEntry(project, pkg)
+                }
+                val anchorPath = file.virtualFile?.path
+                var phys = exportKey?.let { firstNpmExportPsi(project, index, pkg, it) }
+                if (phys == null) {
+                    phys = firstPsiFromPackageTypingsEntry(project, pkg, anchorPath)
+                    if (phys != null && exportKey == null) {
+                        exportKey = "default"
+                    }
+                }
+                if (phys == null) return null
                 JsSymbolPsiElement(
                     symbol.manager, symbol.language, text, null, null,
-                    packageName = pkg, npmExportName = exportKey, navigationTarget = phys,
+                    packageName = pkg, npmExportName = exportKey ?: "default", navigationTarget = phys,
                 )
             }
         }

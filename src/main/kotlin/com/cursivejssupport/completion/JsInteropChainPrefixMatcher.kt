@@ -1,6 +1,5 @@
 package com.cursivejssupport.completion
 
-import com.intellij.codeInsight.completion.CompletionUtilCore
 import com.intellij.codeInsight.completion.PrefixMatcher
 
 /**
@@ -28,10 +27,9 @@ class JsInteropChainPrefixMatcher private constructor(
 
     companion object {
         fun fromEffectiveJs(eff: String): JsInteropChainPrefixMatcher? {
-            val cleaned = eff
-                .replace(CompletionUtilCore.DUMMY_IDENTIFIER_TRIMMED, "")
-                .replace(CompletionUtilCore.DUMMY_IDENTIFIER, "")
-                .trim()
+            val cleaned = JsInteropCompletionPrefixes.collapseInvalidSlashesInJsInteropNormalizedPrefix(
+                JsInteropCompletionPrefixes.normalizedEffectiveJsForCompletion(eff),
+            ).trim()
             if (!cleaned.startsWith("js/")) return null
             val body = cleaned.removePrefix("js/").trimEnd('.')
             if (body.isEmpty()) {

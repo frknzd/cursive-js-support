@@ -33,8 +33,6 @@ class JsSymbolReferenceProvider : PsiReferenceProvider() {
         val symbol = element as? ClSymbol ?: return emptyArray()
 
         val index = JsSymbolIndex.getInstance()
-        if (!index.isLoaded) return emptyArray()
-
         val text = symbol.text ?: ""
         val trimmed = text.trim()
         val ns = symbol.namespace
@@ -54,6 +52,15 @@ class JsSymbolReferenceProvider : PsiReferenceProvider() {
                 bareNpmAlias
 
         if (!looksLikeJsInterop) return emptyArray()
+
+        val needsLoadedDomIndex =
+            trimmed == "js" ||
+                trimmed.startsWith("js/") ||
+                ns == "js" ||
+                trimmed.startsWith(".") ||
+                trimmed.startsWith(".-")
+
+        if (!index.isLoaded && needsLoadedDomIndex) return emptyArray()
 
         if (log.isDebugEnabled) {
             log.debug("[JsSupport] Creating reference for symbol: $trimmed (${symbol::class.simpleName})")
