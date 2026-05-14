@@ -1,31 +1,37 @@
 package com.cursivejssupport.util
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class JsInteropChainTest {
 
     @Test
-    fun pathAfterJsPrefixRawPreservesTrailingDot() {
-        assertEquals("document.", JsInteropChain.pathAfterJsPrefixRaw("js/document.") ?: "")
-        assertEquals("document", JsInteropChain.pathAfterJsPrefixRaw("js/document") ?: "")
+    fun segmentsFromFullTextSplitsOnDots() {
+        assertEquals(listOf("document", "createRange"), JsInteropChain.segmentsFromFullText("js/document.createRange"))
+        assertEquals(listOf("document"), JsInteropChain.segmentsFromFullText("js/document"))
     }
 
     @Test
-    fun pathAfterJsPrefixTrimmedStripsTrailingDot() {
-        assertEquals("document", JsInteropChain.pathAfterJsPrefixTrimmed("js/document.") ?: "")
-        assertEquals("document.createRange", JsInteropChain.pathAfterJsPrefixTrimmed("js/document.createRange") ?: "")
+    fun segmentsFromFullTextTrimsTrailingDot() {
+        assertEquals(listOf("document"), JsInteropChain.segmentsFromFullText("js/document."))
     }
 
     @Test
-    fun pathAfterJsPrefixAliasToTrimmed() {
-        assertEquals("document", JsInteropChain.pathAfterJsPrefix("js/document.") ?: "")
+    fun segmentsFromFullTextReturnsEmptyListForBareJsPrefix() {
+        assertEquals(emptyList<String>(), JsInteropChain.segmentsFromFullText("js/"))
     }
 
     @Test
-    fun reconcileAppendsVirtualDotWhenEditorHasDot() {
-        assertEquals("document.", JsInteropChain.reconcileJsPathRawWithTrailingEditorDot("document", true))
-        assertEquals("document", JsInteropChain.reconcileJsPathRawWithTrailingEditorDot("document", false))
-        assertEquals("document.", JsInteropChain.reconcileJsPathRawWithTrailingEditorDot("document.", true))
+    fun segmentsFromFullTextRejectsNonJsText() {
+        assertNull(JsInteropChain.segmentsFromFullText("foo.bar"))
+    }
+
+    @Test
+    fun segmentsFromSymbolFallsBackToNamespacePlusName() {
+        assertEquals(
+            listOf("document", "createRange"),
+            JsInteropChain.segmentsFromSymbol("js", "document.createRange", "document.createRange"),
+        )
     }
 }

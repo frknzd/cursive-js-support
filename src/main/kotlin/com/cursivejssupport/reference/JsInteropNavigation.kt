@@ -3,12 +3,9 @@ package com.cursivejssupport.reference
 import com.cursivejssupport.index.JsSymbolIndex
 import com.cursivejssupport.npm.NpmPackageResolver
 import com.cursivejssupport.npm.NsAliasResolver
-import com.cursivejssupport.debug.InteropLogView
-import com.cursivejssupport.util.InteropDebugLog
 import com.cursivejssupport.util.JsInteropChain
 import com.cursivejssupport.util.JsInteropPsi
 import com.cursivejssupport.util.JsResolveUtil
-import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.psi.PsiComment
@@ -20,11 +17,9 @@ import cursive.psi.api.symbols.ClSymbol
 import cursive.psi.impl.symbols.ClEditorSymbol
 
 /**
- * Shared navigation / resolve logic for go-to-declaration and [JsSymbolReference].
+ * Shared navigation / resolve logic for go-to-declaration and the symbol reference contributor.
  */
 object JsInteropNavigation {
-
-    private val log = logger<JsInteropNavigation>()
 
     private fun unwrapMemberNavigationWrapper(element: PsiElement): PsiElement =
         (element as? JsMemberNavigationTarget)?.indexedLeaf ?: element
@@ -43,58 +38,60 @@ object JsInteropNavigation {
         packageName: String,
         anchorFilePath: String?,
     ): PsiElement? {
-        val ioFile = NpmPackageResolver(project).typingsEntryFile(packageName, anchorFilePath) ?: run {
-            InteropDebugLog.debug(
-                "[interop-goto] typingsEntryFile miss package=$packageName basePath=${project.basePath} " +
-                    "anchor=${anchorFilePath ?: "null"}",
-            )
-            return null
-        }
-        val vf = LocalFileSystem.getInstance().findFileByPath(ioFile.absolutePath) ?: run {
-            InteropDebugLog.info("[interop-goto] LocalFileSystem miss path=${ioFile.absolutePath}")
-            return null
-        }
-        val psiFile = PsiManager.getInstance(project).findFile(vf) ?: run {
-            InteropDebugLog.info("[interop-goto] PsiManager.findFile miss vfs=${vf.path}")
-            return null
-        }
+        val ioFile = NpmPackageResolver(project).typingsEntryFile(packageName, anchorFilePath) ?: return null
+        val vf = LocalFileSystem.getInstance().findFileByPath(ioFile.absolutePath) ?: return null
+        val psiFile = PsiManager.getInstance(project).findFile(vf) ?: return null
         if (psiFile.textLength == 0) return null
         return psiFile.findElementAt(0) ?: psiFile
     }
 
-    fun expandTargetElement(sourceElement: PsiElement): PsiElement =
-        JsInteropPsi.expandTargetElement(sourceElement)
+    /**
+     * Public entry point for goto-declaration. Defers to [resolveGotoTargetsRaw] and then
+     * removes duplicates that point at the exact same source location, which is common when the
+     * same member is reachable via multiple base interfaces (e.g. `scrollTop` through
+     * `HTMLElement`, `Element`, and `SVGElement`).
+     */
+    fun resolveGotoTargets(sourceElement: PsiElement, project: Project): Array<PsiElement>? {
+        val raw = resolveGotoTargetsRaw(sourceElement, project) ?: return null
+        return distinctByLocation(raw)
+    }
 
-    fun resolveGotoTargets(
+    private fun distinctByLocation(targets: Array<PsiElement>): Array<PsiElement>? {
+        val seen = HashSet<String>()
+        val out = ArrayList<PsiElement>(targets.size)
+        for (element in targets) {
+            val key = locationKey(element)
+            if (seen.add(key)) out.add(element)
+        }
+        if (out.isEmpty()) return null
+        return out.toTypedArray()
+    }
+
+    private fun locationKey(element: PsiElement): String {
+        val nav = (element as? JsMemberNavigationTarget)?.indexedLeaf ?: element
+        val file = nav.containingFile?.virtualFile?.path
+        if (file != null) {
+            val offset = runCatching { nav.textRange?.startOffset ?: -1 }.getOrDefault(-1)
+            // Include the declaring interface so genuinely-different rows with the same source
+            // file/offset (e.g. typeof companion vs interface) stay distinct.
+            val iface = (element as? JsMemberNavigationTarget)?.declaringTypeName
+            return "$file:$offset:${iface ?: ""}"
+        }
+        return "id:${System.identityHashCode(element)}"
+    }
+
+    private fun resolveGotoTargetsRaw(
         sourceElement: PsiElement,
         project: Project,
     ): Array<PsiElement>? {
-        InteropLogView.noteProject(project)
         val text = JsInteropPsi.gotoSymbolText(sourceElement)
-        val editorSym = JsInteropPsi.enclosingEditorSymbol(sourceElement)
-        InteropDebugLog.info(
-            "[interop-goto] resolve: gotoSymbolText='$text' editorSymNs=${editorSym?.namespace} editorSymName=${editorSym?.name} indexLoaded=${JsSymbolIndex.getInstance().isLoaded}",
-        )
         if (text.isBlank() || text.startsWith("\"") || text.startsWith("(") || text.startsWith("[")) {
-            if (text.contains("js/")) {
-                InteropDebugLog.warn(
-                    "[interop-goto] early-exit despite js/ in text (leading paren/quote/bracket?): text='$text'",
-                )
-            } else {
-                InteropDebugLog.info("[interop-goto] early-exit: blank or quoted/bracketed text='$text'")
-            }
             return null
         }
 
-        if (log.isDebugEnabled) log.debug("Goto declaration at symbol text='$text'")
-
-        val file = sourceElement.containingFile ?: run {
-            InteropDebugLog.info("[interop-goto] no containingFile")
-            return null
-        }
+        val file = sourceElement.containingFile ?: return null
         val index = JsSymbolIndex.getInstance()
         val aliases = NsAliasResolver.resolveAliases(file)
-        InteropDebugLog.debug("[interop-goto] npmAliases(size=${aliases.size})=${aliases.entries.take(12)}")
 
         val namespace = if (text.contains("/")) text.substringBefore("/") else text
         val exportName = if (text.contains("/")) text.substringAfter("/") else null
@@ -102,23 +99,11 @@ object JsInteropNavigation {
         if (aliases.containsKey(namespace)) {
             val packageName = aliases[namespace]!!
             val anchorPath = file.virtualFile?.path
-            InteropDebugLog.info("[interop-goto] npm-alias branch ns=$namespace -> pkg=$packageName export=$exportName")
             if (exportName != null && exportName != namespace) {
-                resolveNpmAliasExportOrMemberTargets(project, index, packageName, exportName)?.let {
-                    InteropDebugLog.info("[interop-goto] npm hit export/member targets=${it.size}")
-                    return it
-                }
-                InteropDebugLog.info("[interop-goto] npm miss export=$exportName (no index PSI / member chain)")
+                resolveNpmAliasExportOrMemberTargets(project, index, packageName, exportName)?.let { return it }
             } else {
-                index.getNpmExportPsiElements(project, packageName, "default")?.let {
-                    InteropDebugLog.info("[interop-goto] npm default index targets=${it.size}")
-                    return it
-                }
-                firstPsiFromPackageTypingsEntry(project, packageName, anchorPath)?.let {
-                    InteropDebugLog.info("[interop-goto] npm default typings fallback vfs=${it.containingFile?.virtualFile?.path}")
-                    return arrayOf(it)
-                }
-                InteropDebugLog.info("[interop-goto] npm default miss (no index, no typings file)")
+                index.getNpmExportPsiElements(project, packageName, "default")?.let { return it }
+                firstPsiFromPackageTypingsEntry(project, packageName, anchorPath)?.let { return arrayOf(it) }
             }
         }
 
@@ -130,32 +115,13 @@ object JsInteropNavigation {
                     JsInteropChain.segmentsFromSymbol(sym?.namespace, sym?.name, text) ?: emptyList()
                 }
             }
-            InteropDebugLog.info("[interop-goto] js branch segments=$segments")
             when {
-                segments.isEmpty() -> {
-                    InteropDebugLog.info("[interop-goto] js branch: empty segments (no resolution)")
-                }
+                segments.isEmpty() -> Unit
                 segments.size == 1 ->
-                    index.getGlobalPsiElements(project, segments[0])?.let {
-                        InteropDebugLog.info("[interop-goto] js global '${segments[0]}' targets=${it.size}")
-                        return it
-                    } ?: InteropDebugLog.info("[interop-goto] js global '${segments[0]}' miss (no PSI)")
+                    index.getGlobalPsiElements(project, segments[0])?.let { return it }
                 else -> {
-                    val parentType = index.resolveJsChainType(segments.dropLast(1)) ?: run {
-                        InteropDebugLog.info(
-                            "[interop-goto] js chain parentType miss receiver=${segments.dropLast(1)}",
-                        )
-                        return null
-                    }
-                    index.getMemberPsiElements(project, parentType, segments.last())?.let {
-                        InteropDebugLog.info(
-                            "[interop-goto] js member parentType=$parentType member=${segments.last()} targets=${it.size}",
-                        )
-                        return it
-                    }
-                    InteropDebugLog.info(
-                        "[interop-goto] js member miss parentType=$parentType member=${segments.last()}",
-                    )
+                    val parentType = index.resolveJsChainType(segments.dropLast(1)) ?: return null
+                    index.getMemberPsiElements(project, parentType, segments.last())?.let { return it }
                 }
             }
         }
@@ -178,8 +144,6 @@ object JsInteropNavigation {
                     ?: children.getOrNull(0)?.text
                 if (children.size > 1 && headText == text) {
                     val receiver = children[1]
-                    if (log.isDebugEnabled) log.debug("Member goto receiver='${receiver.text}'")
-
                     val receiverText = JsInteropPsi.enclosingEditorSymbol(receiver)?.text ?: receiver.text
                     var typeName = JsResolveUtil.resolveType(receiver, index)
                     if (typeName == null && receiverText.startsWith("js/")) {
@@ -209,15 +173,9 @@ object JsInteropNavigation {
                 targets = index.getAnyMemberPsiElements(project, memberName, preferredReceiverType = preferredType)
             }
 
-            if (targets != null) {
-                if (log.isDebugEnabled) log.debug("Resolved method .$memberName to ${targets.size} target(s)")
-                InteropDebugLog.info("[interop-goto] dot-member .$memberName targets=${targets.size}")
-                return targets
-            }
-            InteropDebugLog.info("[interop-goto] dot-member .$memberName no targets")
+            if (targets != null) return targets
         }
 
-        InteropDebugLog.info("[interop-goto] resolve: no targets (fallthrough)")
         return null
     }
 

@@ -28,20 +28,19 @@
         <postStartupActivity
                 implementation="com.cursivejssupport.plugin.JsSupportPlugin"/>
 
-        <postStartupActivity
-                implementation="com.cursivejssupport.debug.InteropLogWarmupActivity"/>
-
         <daemon.highlightInfoFilter
                 implementation="com.cursivejssupport.annotator.JsInteropHighlightFilter"/>
 
-        <typedHandler implementation="com.cursivejssupport.completion.JsInteropCompletionAutoPopupTypedHandler"/>
+        <typedHandler implementation="com.cursivejssupport.completion.InteropAutoPopupHandler"/>
 
         <completion.contributor
+                order="first"
                 language="Clojure"
-                implementationClass="com.cursivejssupport.completion.ClojureScriptCompletionContributor"/>
+                implementationClass="com.cursivejssupport.completion.InteropCompletionContributor"/>
         <completion.contributor
+                order="first"
                 language="ClojureScript"
-                implementationClass="com.cursivejssupport.completion.ClojureScriptCompletionContributor"/>
+                implementationClass="com.cursivejssupport.completion.InteropCompletionContributor"/>
 
         <completion.confidence
                 order="first"
@@ -74,10 +73,6 @@
                 order="first"
                 language="ClojureScript"
                 implementation="com.cursivejssupport.reference.JsInteropGotoDeclarationHandler"/>
-
-        <toolWindow id="JsInteropLog"
-                    factoryClass="com.cursivejssupport.debug.InteropLogToolWindowFactory"
-                    anchor="bottom"/>
 
     </extensions>
 </idea-plugin>

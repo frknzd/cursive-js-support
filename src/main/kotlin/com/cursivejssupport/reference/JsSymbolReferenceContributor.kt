@@ -23,8 +23,7 @@ class JsSymbolReferenceContributor : PsiReferenceContributor() {
     }
 }
 
-class JsSymbolReferenceProvider : PsiReferenceProvider() {
-    private val log = com.intellij.openapi.diagnostic.Logger.getInstance(JsSymbolReferenceProvider::class.java)
+private class JsSymbolReferenceProvider : PsiReferenceProvider() {
 
     override fun getReferencesByElement(
         element: PsiElement,
@@ -62,14 +61,11 @@ class JsSymbolReferenceProvider : PsiReferenceProvider() {
 
         if (!index.isLoaded && needsLoadedDomIndex) return emptyArray()
 
-        if (log.isDebugEnabled) {
-            log.debug("[JsSupport] Creating reference for symbol: $trimmed (${symbol::class.simpleName})")
-        }
         return arrayOf(JsSymbolReference(symbol))
     }
 }
 
-class JsSymbolReference(element: ClSymbol) : PsiReferenceBase<ClSymbol>(element, TextRange(0, element.textLength)) {
+private class JsSymbolReference(element: ClSymbol) : PsiReferenceBase<ClSymbol>(element, TextRange(0, element.textLength)) {
 
     override fun resolve(): PsiElement? =
         JsInteropNavigation.resolveClSymbol(element, element.project)

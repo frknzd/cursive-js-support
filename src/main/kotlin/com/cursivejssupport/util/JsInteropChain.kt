@@ -26,28 +26,4 @@ object JsInteropChain {
             else -> return null
         }
     }
-
-    /** Path after `js/` including a possible partial last segment (not split), trailing `.` trimmed. */
-    fun pathAfterJsPrefix(userText: String): String? = pathAfterJsPrefixTrimmed(userText)
-
-    /** Path after `js/` without trimming a trailing `.` (so `document.` stays distinct from `document`). */
-    fun pathAfterJsPrefixRaw(userText: String): String? {
-        val t = userText.trim()
-        if (!t.startsWith("js/")) return null
-        return t.removePrefix("js/")
-    }
-
-    fun pathAfterJsPrefixTrimmed(userText: String): String? =
-        pathAfterJsPrefixRaw(userText)?.trimEnd('.')
-
-    /**
-     * When Cursive dummy PSI drops a trailing `.` from the effective `js/...` slice but the editor caret
-     * sits immediately after `.`, treat the path as dot-terminated for `MembersAfterGlobal` routing.
-     */
-    fun reconcileJsPathRawWithTrailingEditorDot(pathRaw: String, editorCharBeforeCaretIsDot: Boolean): String =
-        if (pathRaw.isNotEmpty() && !pathRaw.endsWith(".") && editorCharBeforeCaretIsDot) {
-            "$pathRaw."
-        } else {
-            pathRaw
-        }
 }

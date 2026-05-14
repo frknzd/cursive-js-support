@@ -31,8 +31,8 @@ object ShadowNpmDepsParser {
             val pbr = Parsers.newParseable(StringReader(text))
             val parser = Parsers.newParser(Parsers.defaultConfiguration())
             collectFromValue(parser.nextValue(pbr), out)
-        } catch (e: Exception) {
-            log.debug("EDN parse for npm-deps: ${e.message}")
+        } catch (_: Exception) {
+            // Malformed EDN — surface nothing rather than crashing the contributor.
         }
         return out
     }

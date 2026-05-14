@@ -162,10 +162,6 @@ object JsResolveUtil {
         return children.getOrNull(1)
     }
 
-    fun resolveReceiverType(receiver: ClEditorSymbol?, index: JsSymbolIndex): String? {
-        return resolveType(receiver, index)
-    }
-
     private fun findTypeHint(element: PsiElement): String? {
         // 1. Check for ^Type metadata on the element or its parent
         // In Cursive, metadata often appears as a sibling with '^'

@@ -7,18 +7,6 @@ import java.io.File
 import java.io.FileOutputStream
 import java.util.zip.GZIPOutputStream
 
-fun findNodeForScript(): String {
-    val envPath = System.getenv("PATH") ?: ""
-    val dirs = envPath.split(File.pathSeparatorChar).toMutableList()
-    dirs.addAll(listOf("/usr/local/bin", "/opt/homebrew/bin", "/usr/bin", "/bin"))
-
-    for (dir in dirs.distinct()) {
-        val candidate = File(dir, "node")
-        if (candidate.canExecute()) return candidate.absolutePath
-    }
-    error("Node.js not found. Please ensure Node is installed.")
-}
-
 fun main() {
     val tsLibDir = File("src/main/resources/js/lib")
 
@@ -42,7 +30,8 @@ fun main() {
         return
     }
 
-    val nodePath = findNodeForScript()
+    val nodePath = DtsParser.findNodeExecutable()
+        ?: error("Node.js not found on PATH or in /usr/local/bin, /opt/homebrew/bin, /usr/bin, /bin.")
     println("Parsing ${filesToParse.size} files with new location logic...")
 
     val parser = DtsParser(nodePath)
@@ -62,7 +51,7 @@ fun main() {
             fos.close()
         }
 
-        println("✅ Successfully generated new index at ${outputFile.absolutePath}")
+        println("Successfully generated new index at ${outputFile.absolutePath}")
 
         val loc = parsedSymbols.interfaces["Document"]?.members?.get("createRange")?.firstOrNull()?.location
         println("Verification -> Document.createRange location: $loc")

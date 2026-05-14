@@ -1,7 +1,6 @@
 package com.cursivejssupport.npm
 
 import com.cursivejssupport.settings.JsSupportSettings
-import com.cursivejssupport.util.InteropDebugLog
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.intellij.openapi.diagnostic.logger
@@ -43,26 +42,17 @@ class NpmPackageResolver(
     fun discoverAllDependencyPackageNames(anchorFilePath: String? = null): Set<String> {
         val names = mutableSetOf<String>()
         val roots = candidateNpmDiscoveryRoots(anchorFilePath)
-        val shadowFiles = mutableListOf<String>()
         for (root in roots) {
             File(root, "package.json").takeIf { it.exists() }?.let { f -> names += parsePackageJson(f) }
             collectWorkspacePackageJsonFiles(root).forEach { f -> names += parsePackageJson(f) }
             File(root, "shadow-cljs.edn").takeIf { it.exists() }?.let { f ->
-                val fromShadow = ShadowNpmDepsParser.collectNpmDepPackageNames(f)
-                if (fromShadow.isNotEmpty()) shadowFiles += f.path
-                names += fromShadow
+                names += ShadowNpmDepsParser.collectNpmDepPackageNames(f)
             }
             if (settings.scanLockfileTransitive) {
                 File(root, "package-lock.json").takeIf { it.exists() }?.let { names += parsePackageLockJson(it) }
             }
         }
-        val out = names.filter { !it.startsWith("@types/") }.toSet()
-        InteropDebugLog.debug(
-            "[interop-npm-discover] roots=${roots.size} anchor=${anchorFilePath ?: "null"} " +
-                "shadowEdnHits=${shadowFiles.size} packages=${out.size} " +
-                "shadowPaths=${shadowFiles.take(4)}",
-        )
-        return out
+        return names.filter { !it.startsWith("@types/") }.toSet()
     }
 
     private fun npmSignalsPresent(dir: File): Boolean =

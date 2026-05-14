@@ -158,64 +158,86 @@ class JsSymbolIndex {
     fun getNpmExportPsiElements(project: Project, packageName: String, exportName: String): Array<PsiElement>? {
         val exportsMap = npmExports[packageName] ?: return null
         if (!exportsMap.containsKey(exportName)) return null
-        val location = exportsMap[exportName]
-        if (location == null) {
-            if (log.isDebugEnabled) {
-                log.debug("npm export has no location: package=$packageName export=$exportName")
-            }
-            return null
-        }
+        val location = exportsMap[exportName] ?: return null
         val resolved = resolveLocation(project, location) ?: return null
         return arrayOf(resolved)
     }
 
     fun getAnyMemberPsiElements(project: Project, memberName: String, preferredReceiverType: String? = null): Array<PsiElement>? {
-        if (log.isDebugEnabled) {
-            log.debug("Searching for member '$memberName' across ${interfaces.size} interfaces")
-        }
-        data class Hit(val element: PsiElement, val ifaceName: String, val distance: Int, val member: JsMember, val location: JsLocation)
-        val hits = mutableListOf<Hit>()
-        var foundCount = 0
+        val candidates = collectMemberCandidates(memberName)
+        if (candidates.isEmpty()) return null
 
+        val deduped = dedupeMemberCandidatesByLocation(candidates)
+        val sorted = sortMemberCandidates(deduped, preferredReceiverType)
+
+        val out = sorted.mapNotNull { c ->
+            val resolved = resolveLocation(project, c.location) ?: return@mapNotNull null
+            wrapIndexedMember(project, resolved, c.declaringInterface, c.member, c.location)
+        }
+        return if (out.isNotEmpty()) out.toTypedArray() else null
+    }
+
+    /**
+     * Internal data class for member-resolution candidates. Exposed for unit tests that exercise
+     * the dedup grouping without standing up a Project / PSI.
+     */
+    internal data class MemberCandidate(
+        val declaringInterface: String,
+        val distance: Int,
+        val member: JsMember,
+        val location: JsLocation,
+    )
+
+    internal fun collectMemberCandidates(memberName: String): List<MemberCandidate> {
+        val out = ArrayList<MemberCandidate>()
         for (ifaceName in interfaces.keys) {
             val resolvedMember = resolveMember(ifaceName, memberName) ?: continue
-            val locations = resolvedMember.overloads.mapNotNull { m -> m.location?.let { loc -> m to loc } }
-            for ((member, location) in locations) {
-                foundCount++
-                val resolved = resolveLocation(project, location)
-                if (resolved != null) {
-                    hits.add(Hit(resolved, resolvedMember.declaringType, resolvedMember.distance, member, location))
-                }
+            for (overload in resolvedMember.overloads) {
+                val loc = overload.location ?: continue
+                out.add(
+                    MemberCandidate(
+                        declaringInterface = resolvedMember.declaringType,
+                        distance = resolvedMember.distance,
+                        member = overload,
+                        location = loc,
+                    )
+                )
             }
         }
+        return out
+    }
 
-        if (hits.isEmpty()) return null
+    /**
+     * Collapses candidates that point at the exact same `(file, offset)`. When several base
+     * interfaces expose the same `.d.ts` location through inheritance we keep the entry with the
+     * smallest distance (the most-specific declaring interface).
+     */
+    internal fun dedupeMemberCandidatesByLocation(candidates: List<MemberCandidate>): List<MemberCandidate> =
+        candidates
+            .groupBy { it.location.filePath to it.location.offset }
+            .map { (_, group) -> group.minBy { it.distance } }
 
-        val sorted = if (preferredReceiverType != null) {
-            hits.sortedWith(
+    internal fun sortMemberCandidates(
+        candidates: List<MemberCandidate>,
+        preferredReceiverType: String?,
+    ): List<MemberCandidate> =
+        if (preferredReceiverType != null) {
+            candidates.sortedWith(
                 compareBy(
                     {
                         when {
-                            it.ifaceName == preferredReceiverType -> 0
-                            interfaces[preferredReceiverType]?.extends?.contains(it.ifaceName) == true -> 1
+                            it.declaringInterface == preferredReceiverType -> 0
+                            interfaces[preferredReceiverType]?.extends?.contains(it.declaringInterface) == true -> 1
                             else -> 2 + it.distance
                         }
                     },
                     { it.distance },
-                    { it.ifaceName }
+                    { it.declaringInterface }
                 )
             )
         } else {
-            hits.sortedBy { it.ifaceName }
+            candidates.sortedWith(compareBy({ it.distance }, { it.declaringInterface }))
         }
-
-        if (log.isDebugEnabled) {
-            log.debug("Member '$memberName': scanned $foundCount locations, resolved ${sorted.size} PSI elements")
-        }
-        return sorted.map { hit ->
-            wrapIndexedMember(project, hit.element, hit.ifaceName, hit.member, hit.location)
-        }.toTypedArray()
-    }
 
     private fun wrapIndexedMember(
         project: Project,
@@ -226,7 +248,7 @@ class JsSymbolIndex {
     ): PsiElement {
         val deprecated = member?.doc?.contains("@deprecated", ignoreCase = true) == true
         val mgr = PsiManager.getInstance(project)
-        return JsMemberNavigationTarget(mgr, resolved.language, resolved, declaringInterface, deprecated, location)
+        return JsMemberNavigationTarget(mgr, resolved.language, resolved, declaringInterface, deprecated, location, member)
     }
 
     private fun resolveLocation(project: Project, location: JsLocation): PsiElement? {
@@ -265,10 +287,6 @@ class JsSymbolIndex {
     fun isKnownNpmExport(packageName: String, symbolName: String): Boolean = npmExports[packageName]?.containsKey(symbolName) == true
     fun resolveGlobalType(name: String): String? = globals[name]?.type
     fun resolveInterface(typeName: String): JsInterface? = interfaces[typeName]
-    fun resolveGlobalMember(globalName: String, memberName: String): List<JsMember>? {
-        val typeName = globals[globalName]?.type ?: return null
-        return resolveMember(typeName, memberName)?.overloads
-    }
 
     fun resolveMembers(typeName: String): Map<String, JsResolvedMember> {
         val out = linkedMapOf<String, JsResolvedMember>()
@@ -278,9 +296,6 @@ class JsSymbolIndex {
 
     fun resolveMember(typeName: String, memberName: String): JsResolvedMember? =
         resolveMembers(typeName)[memberName]
-
-    fun resolveMemberDeclaringType(typeName: String, memberName: String): String? =
-        resolveMember(typeName, memberName)?.declaringType
 
     private fun collectMembers(
         typeName: String,
@@ -333,10 +348,7 @@ class JsSymbolIndex {
     /** TypeScript type for an npm export (e.g. `default` → `React.ComponentType`), if known from typings. */
     fun resolveNpmExportType(packageName: String, exportName: String): String? =
         npmExportTypes[packageName]?.get(exportName)
-    fun allInterfaces(): Map<String, JsInterface> = interfaces
     fun hasMemberName(memberName: String): Boolean = memberSamples.containsKey(memberName)
-    val globalCount: Int get() = globals.size
-    val interfaceCount: Int get() = interfaces.size
 
     companion object {
         @JvmStatic fun getInstance(): JsSymbolIndex = service()

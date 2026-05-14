@@ -57,18 +57,6 @@ object JsInteropPsi {
         return expandTargetElement(sourceElement).text.trim()
     }
 
-    /** Full symbol text for completion (strips dummy identifier). */
-    fun completionLogicalText(position: PsiElement, fallbackLeafText: String): String {
-        val raw = jsQualifiedSymbolText(position, fallbackLeafText)
-            ?: enclosingEditorSymbol(position)?.text
-            ?: fallbackLeafText
-        return raw
-            .replace(CompletionUtilCore.DUMMY_IDENTIFIER_TRIMMED, "")
-            .replace(CompletionUtilCore.DUMMY_IDENTIFIER, "")
-            .replace("cursive-completion", "")
-            .trim()
-    }
-
     private fun reconstructJsQualifiedFromParents(element: PsiElement): String? {
         var current: PsiElement? = element
         repeat(4) {
