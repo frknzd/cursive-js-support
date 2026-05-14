@@ -18,7 +18,6 @@ import com.intellij.psi.PsiComment
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiWhiteSpace
 import com.intellij.psi.util.PsiTreeUtil
-import com.intellij.openapi.util.TextRange
 import com.intellij.util.ProcessingContext
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.max
@@ -288,7 +287,8 @@ private class ClojureScriptCompletionProvider : CompletionProvider<CompletionPar
                     val rel = npmAliasRelativeTail(typedNamespace, prefix, stripped, position)
                     val exportKey = npmAliasExportKeySegment(rel)
                     val exportCount = index.npmExportNames(pkg).size
-                    val n = if (npmAliasWantsMemberCompletion(rel, exportKey, userText, index, pkg)) {
+                    val memberMode = npmAliasWantsMemberCompletion(rel, exportKey, userText, index, pkg)
+                    val n = if (memberMode) {
                         addNpmAliasExportMemberCompletions(typedNamespace, pkg, exportKey, rel, index, safeResult)
                     } else {
                         addNpmExports(typedNamespace, pkg, index, safeResult)
@@ -296,7 +296,7 @@ private class ClojureScriptCompletionProvider : CompletionProvider<CompletionPar
                     InteropDebugLog.debug("[interop-completion] contributed npmTypedNs count=$n")
                     InteropDebugLog.info(
                         "[interop-completion] branch=npmTypedNs ns=$typedNamespace pkg=$pkg exportSuggestions=$exportCount " +
-                            "memberMode=${npmAliasWantsMemberCompletion(rel, exportKey, userText, index, pkg)}",
+                            "memberMode=$memberMode",
                     )
                 }
             }
@@ -331,6 +331,78 @@ private class ClojureScriptCompletionProvider : CompletionProvider<CompletionPar
                 )
             }
         }
+    }
+
+    private fun npmAliasRelativeTail(ns: String, prefix: String, stripped: String, position: PsiElement): String {
+        val raw = when {
+            stripped.startsWith(prefix) -> stripped.removePrefix(prefix)
+            else -> {
+                val sym = JsInteropPsi.enclosingEditorSymbol(position)
+                if (sym?.namespace == ns && !sym.name.isNullOrBlank()) sym.name!!.trim()
+                else if ('/' in stripped) stripped.substringAfter('/')
+                else stripped
+            }
+        }
+        return stripCompletionDummy(raw).trim()
+    }
+
+    private fun npmAliasExportKeySegment(rel: String): String =
+        stripCompletionDummy(rel.substringBefore('.'))
+            .substringBefore('/')
+            .trim()
+
+    private fun npmAliasWantsMemberCompletion(
+        rel: String,
+        exportKey: String,
+        userText: String,
+        index: JsSymbolIndex,
+        packageName: String,
+    ): Boolean =
+        index.isKnownNpmExport(packageName, exportKey) && (rel.contains('.') || userText.endsWith('.'))
+
+    private fun addNpmAliasExportMemberCompletions(
+        typedNamespace: String,
+        packageName: String,
+        exportKey: String,
+        rel: String,
+        index: JsSymbolIndex,
+        result: CompletionResultSet,
+    ): Int {
+        val afterExport = if (rel.startsWith(exportKey)) rel.drop(exportKey.length).trimStart('.') else rel
+        val rest = afterExport
+        val restTrimmed = rest.trimEnd('.')
+        val allSegs = if (restTrimmed.isEmpty()) {
+            emptyList()
+        } else {
+            restTrimmed.split('.')
+                .map { stripCompletionDummy(it).substringBefore('/').trim() }
+                .filter { it.isNotEmpty() }
+        }
+        val dottedRestEnds = rest.endsWith('.') || (rest.isEmpty() && rel.endsWith('.'))
+        val receiverSegs = when {
+            allSegs.isEmpty() -> emptyList()
+            dottedRestEnds -> allSegs
+            else -> allSegs.dropLast(1)
+        }
+        var receiverType = index.resolveNpmExportType(packageName, exportKey)
+            ?: return addNpmExports(typedNamespace, packageName, index, result)
+        for (seg in receiverSegs) {
+            val ifaceStep = index.resolveInterface(receiverType)
+                ?: return addNpmExports(typedNamespace, packageName, index, result)
+            val m = ifaceStep.members[seg]?.firstOrNull()
+                ?: return addNpmExports(typedNamespace, packageName, index, result)
+            receiverType = if (m.kind == "method") m.returns else m.type
+        }
+        val finalIface = index.resolveInterface(receiverType)
+            ?: return addNpmExports(typedNamespace, packageName, index, result)
+        val chainBase = buildString {
+            append(typedNamespace).append('/').append(exportKey)
+            for (s in receiverSegs) {
+                append('.').append(s)
+            }
+            append('.')
+        }
+        return emitMembersForJsChain(finalIface.members, chainBase, receiverType, result)
     }
 
     private fun addJsChainMemberCompletions(userText: String, index: JsSymbolIndex, result: CompletionResultSet): Int {
