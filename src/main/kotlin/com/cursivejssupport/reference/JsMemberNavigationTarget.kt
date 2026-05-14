@@ -1,8 +1,12 @@
 package com.cursivejssupport.reference
 
+import com.cursivejssupport.index.BundledDomLibs
+import com.cursivejssupport.parser.JsLocation
 import com.intellij.icons.AllIcons
 import com.intellij.lang.Language
 import com.intellij.navigation.ItemPresentation
+import com.intellij.openapi.fileEditor.OpenFileDescriptor
+import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.psi.NavigatablePsiElement
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
@@ -18,6 +22,7 @@ class JsMemberNavigationTarget(
     private val delegate: PsiElement,
     private val declaringInterface: String,
     private val deprecatedHint: Boolean,
+    private val location: JsLocation? = null,
 ) : LightElement(manager, language), NavigatablePsiElement {
 
     /** Declaring interface name (e.g. `Document`) for presentation / resolve metadata. */
@@ -46,12 +51,27 @@ class JsMemberNavigationTarget(
     }
 
     override fun navigate(requestFocus: Boolean) {
+        val loc = location
+        if (loc != null) {
+            val vf = BundledDomLibs.resolveVirtualFile(loc.filePath)
+                ?: LocalFileSystem.getInstance().findFileByPath(loc.filePath)
+            if (vf != null) {
+                OpenFileDescriptor(project, vf, loc.offset).navigate(requestFocus)
+                return
+            }
+        }
         val nav = delegate as? NavigatablePsiElement
             ?: delegate.navigationElement as? NavigatablePsiElement
         nav?.navigate(requestFocus)
     }
 
     override fun canNavigate(): Boolean {
+        val loc = location
+        if (loc != null) {
+            val vf = BundledDomLibs.resolveVirtualFile(loc.filePath)
+                ?: LocalFileSystem.getInstance().findFileByPath(loc.filePath)
+            if (vf != null) return true
+        }
         val nav = delegate as? NavigatablePsiElement
             ?: delegate.navigationElement as? NavigatablePsiElement
         return nav?.canNavigate() == true

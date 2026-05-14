@@ -17,6 +17,15 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.io.File
 
+data class JsResolvedMember(
+    val declaringType: String,
+    val memberName: String,
+    val overloads: List<JsMember>,
+    val distance: Int,
+) {
+    val first: JsMember? get() = overloads.firstOrNull()
+}
+
 @Service(Service.Level.APP)
 class JsSymbolIndex {
 
@@ -49,6 +58,7 @@ class JsSymbolIndex {
                 }
                 JsInterface(
                     location = existing.location ?: incoming.location,
+                    extends = (existing.extends + incoming.extends).distinct(),
                     members = merged
                 )
             }
@@ -68,6 +78,7 @@ class JsSymbolIndex {
                     }
                     JsInterface(
                         location = existing.location ?: incoming.location,
+                        extends = (existing.extends + incoming.extends).distinct(),
                         members = merged
                     )
                 }
@@ -96,12 +107,13 @@ class JsSymbolIndex {
 
     private fun rebuildMemberSamples() {
         memberSamples.clear()
-        for ((typeName, iface) in interfaces) {
-            for ((memberName, overloads) in iface.members) {
+        for (typeName in interfaces.keys) {
+            for ((memberName, resolved) in resolveMembers(typeName)) {
+                val overloads = resolved.overloads
                 val first = overloads.firstOrNull() ?: continue
                 val bucket = memberSamples.computeIfAbsent(memberName) { mutableListOf() }
                 if (bucket.size < 8) {
-                    bucket.add(typeName to first)
+                    bucket.add(resolved.declaringType to first)
                 }
             }
         }
@@ -134,11 +146,11 @@ class JsSymbolIndex {
     }
 
     fun getMemberPsiElements(project: Project, typeName: String, memberName: String): Array<PsiElement>? {
-        val overloads = interfaces[typeName]?.members?.get(memberName) ?: return null
-        val out = overloads.mapNotNull { m ->
+        val resolvedMember = resolveMember(typeName, memberName) ?: return null
+        val out = resolvedMember.overloads.mapNotNull { m ->
             val loc = m.location ?: return@mapNotNull null
             val resolved = resolveLocation(project, loc) ?: return@mapNotNull null
-            wrapIndexedMember(project, resolved, typeName, m)
+            wrapIndexedMember(project, resolved, resolvedMember.declaringType, m, loc)
         }
         return if (out.isNotEmpty()) out.toTypedArray() else null
     }
@@ -161,17 +173,18 @@ class JsSymbolIndex {
         if (log.isDebugEnabled) {
             log.debug("Searching for member '$memberName' across ${interfaces.size} interfaces")
         }
-        data class Hit(val element: PsiElement, val ifaceName: String)
+        data class Hit(val element: PsiElement, val ifaceName: String, val distance: Int, val member: JsMember, val location: JsLocation)
         val hits = mutableListOf<Hit>()
         var foundCount = 0
 
-        for ((ifaceName, iface) in interfaces) {
-            val locations = iface.members[memberName]?.mapNotNull { it.location } ?: continue
-            for (location in locations) {
+        for (ifaceName in interfaces.keys) {
+            val resolvedMember = resolveMember(ifaceName, memberName) ?: continue
+            val locations = resolvedMember.overloads.mapNotNull { m -> m.location?.let { loc -> m to loc } }
+            for ((member, location) in locations) {
                 foundCount++
                 val resolved = resolveLocation(project, location)
                 if (resolved != null) {
-                    hits.add(Hit(resolved, ifaceName))
+                    hits.add(Hit(resolved, resolvedMember.declaringType, resolvedMember.distance, member, location))
                 }
             }
         }
@@ -184,10 +197,11 @@ class JsSymbolIndex {
                     {
                         when {
                             it.ifaceName == preferredReceiverType -> 0
-                            it.ifaceName.endsWith(preferredReceiverType) -> 1
-                            else -> 2
+                            interfaces[preferredReceiverType]?.extends?.contains(it.ifaceName) == true -> 1
+                            else -> 2 + it.distance
                         }
                     },
+                    { it.distance },
                     { it.ifaceName }
                 )
             )
@@ -199,15 +213,20 @@ class JsSymbolIndex {
             log.debug("Member '$memberName': scanned $foundCount locations, resolved ${sorted.size} PSI elements")
         }
         return sorted.map { hit ->
-            val m = interfaces[hit.ifaceName]?.members?.get(memberName)?.firstOrNull()
-            wrapIndexedMember(project, hit.element, hit.ifaceName, m)
+            wrapIndexedMember(project, hit.element, hit.ifaceName, hit.member, hit.location)
         }.toTypedArray()
     }
 
-    private fun wrapIndexedMember(project: Project, resolved: PsiElement, declaringInterface: String, member: JsMember?): PsiElement {
+    private fun wrapIndexedMember(
+        project: Project,
+        resolved: PsiElement,
+        declaringInterface: String,
+        member: JsMember?,
+        location: JsLocation?,
+    ): PsiElement {
         val deprecated = member?.doc?.contains("@deprecated", ignoreCase = true) == true
         val mgr = PsiManager.getInstance(project)
-        return JsMemberNavigationTarget(mgr, resolved.language, resolved, declaringInterface, deprecated)
+        return JsMemberNavigationTarget(mgr, resolved.language, resolved, declaringInterface, deprecated, location)
     }
 
     private fun resolveLocation(project: Project, location: JsLocation): PsiElement? {
@@ -246,9 +265,45 @@ class JsSymbolIndex {
     fun isKnownNpmExport(packageName: String, symbolName: String): Boolean = npmExports[packageName]?.containsKey(symbolName) == true
     fun resolveGlobalType(name: String): String? = globals[name]?.type
     fun resolveInterface(typeName: String): JsInterface? = interfaces[typeName]
-    fun resolveMember(globalName: String, memberName: String): List<JsMember>? {
+    fun resolveGlobalMember(globalName: String, memberName: String): List<JsMember>? {
         val typeName = globals[globalName]?.type ?: return null
-        return interfaces[typeName]?.members?.get(memberName)
+        return resolveMember(typeName, memberName)?.overloads
+    }
+
+    fun resolveMembers(typeName: String): Map<String, JsResolvedMember> {
+        val out = linkedMapOf<String, JsResolvedMember>()
+        collectMembers(typeName, distance = 0, seen = mutableSetOf(), out = out)
+        return out
+    }
+
+    fun resolveMember(typeName: String, memberName: String): JsResolvedMember? =
+        resolveMembers(typeName)[memberName]
+
+    fun resolveMemberDeclaringType(typeName: String, memberName: String): String? =
+        resolveMember(typeName, memberName)?.declaringType
+
+    private fun collectMembers(
+        typeName: String,
+        distance: Int,
+        seen: MutableSet<String>,
+        out: MutableMap<String, JsResolvedMember>,
+    ) {
+        if (!seen.add(typeName)) return
+        val iface = interfaces[typeName] ?: return
+        for ((memberName, overloads) in iface.members) {
+            out.putIfAbsent(
+                memberName,
+                JsResolvedMember(
+                    declaringType = typeName,
+                    memberName = memberName,
+                    overloads = overloads,
+                    distance = distance,
+                ),
+            )
+        }
+        for (base in iface.extends) {
+            collectMembers(base, distance + 1, seen, out)
+        }
     }
 
     /**
@@ -262,8 +317,7 @@ class JsSymbolIndex {
             ?: return null
         for (i in 1 until segments.size) {
             val memberName = segments[i]
-            val iface = resolveInterface(type) ?: return null
-            val member = iface.members[memberName]?.firstOrNull() ?: return null
+            val member = resolveMember(type, memberName)?.first ?: return null
             type = when (member.kind) {
                 "method" -> member.returns
                 else -> member.type

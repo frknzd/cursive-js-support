@@ -33,7 +33,7 @@ object JsInteropNavigation {
         index.getGlobalPsiElements(project, name)?.firstOrNull()?.let { unwrapMemberNavigationWrapper(it) }
 
     private fun firstMemberPsi(project: Project, index: JsSymbolIndex, typeName: String, member: String): PsiElement? =
-        index.getMemberPsiElements(project, typeName, member)?.firstOrNull()?.let { unwrapMemberNavigationWrapper(it) }
+        index.getMemberPsiElements(project, typeName, member)?.firstOrNull()
 
     private fun firstNpmExportPsi(project: Project, index: JsSymbolIndex, pkg: String, export: String): PsiElement? =
         index.getNpmExportPsiElements(project, pkg, export)?.firstOrNull()?.let { unwrapMemberNavigationWrapper(it) }
@@ -104,11 +104,11 @@ object JsInteropNavigation {
             val anchorPath = file.virtualFile?.path
             InteropDebugLog.info("[interop-goto] npm-alias branch ns=$namespace -> pkg=$packageName export=$exportName")
             if (exportName != null && exportName != namespace) {
-                index.getNpmExportPsiElements(project, packageName, exportName)?.let {
-                    InteropDebugLog.info("[interop-goto] npm hit export=$exportName targets=${it.size}")
+                resolveNpmAliasExportOrMemberTargets(project, index, packageName, exportName)?.let {
+                    InteropDebugLog.info("[interop-goto] npm hit export/member targets=${it.size}")
                     return it
                 }
-                InteropDebugLog.info("[interop-goto] npm miss export=$exportName (no index PSI)")
+                InteropDebugLog.info("[interop-goto] npm miss export=$exportName (no index PSI / member chain)")
             } else {
                 index.getNpmExportPsiElements(project, packageName, "default")?.let {
                     InteropDebugLog.info("[interop-goto] npm default index targets=${it.size}")
@@ -221,6 +221,44 @@ object JsInteropNavigation {
         return null
     }
 
+    private fun resolveNpmAliasExportOrMemberTargets(
+        project: Project,
+        index: JsSymbolIndex,
+        packageName: String,
+        exportTail: String,
+    ): Array<PsiElement>? {
+        val exportKey = exportTail.substringBefore('.').substringBefore('/').trim()
+        if (exportKey.isEmpty()) return null
+        if (!index.isKnownNpmExport(packageName, exportKey)) {
+            if (index.isKnownNpmExport(packageName, exportTail)) {
+                return index.getNpmExportPsiElements(project, packageName, exportTail)
+            }
+            return null
+        }
+        val remainder = exportTail.removePrefix(exportKey).let { tail ->
+            when {
+                tail.startsWith('/') -> ""
+                else -> tail.trimStart('.').trim()
+            }
+        }
+        if (remainder.isEmpty()) {
+            return index.getNpmExportPsiElements(project, packageName, exportKey)
+        }
+        val baseType = index.resolveNpmExportType(packageName, exportKey) ?: return null
+        val memberSegs = remainder.split('.')
+            .map { it.substringBefore('/').trim() }
+            .filter { it.isNotEmpty() }
+        if (memberSegs.isEmpty()) {
+            return index.getNpmExportPsiElements(project, packageName, exportKey)
+        }
+        var receiverType = baseType
+        for (seg in memberSegs.dropLast(1)) {
+            val m = index.resolveMember(receiverType, seg)?.first ?: return null
+            receiverType = if (m.kind == "method") m.returns else m.type
+        }
+        return index.getMemberPsiElements(project, receiverType, memberSegs.last())
+    }
+
     fun resolveClSymbol(symbol: PsiElement, project: Project): PsiElement? {
         val (text, namespace, name) = interopSymbolTextNamespaceName(symbol) ?: return null
         val index = JsSymbolIndex.getInstance()
@@ -241,11 +279,12 @@ object JsInteropNavigation {
                     else -> {
                         val parentType = index.resolveJsChainType(segments.dropLast(1)) ?: return null
                         val last = segments.last()
-                        val member = index.resolveInterface(parentType)?.members?.get(last)?.firstOrNull()
+                        val resolvedMember = index.resolveMember(parentType, last)
                             ?: return null
+                        val member = resolvedMember.first ?: return null
                         val phys = firstMemberPsi(project, index, parentType, last)
                         JsSymbolPsiElement(
-                            symbol.manager, symbol.language, last, parentType, member.doc,
+                            symbol.manager, symbol.language, last, resolvedMember.declaringType, member.doc,
                             member = member, navigationTarget = phys,
                         )
                     }
@@ -260,24 +299,32 @@ object JsInteropNavigation {
 
                 val typeName = JsResolveUtil.resolveType(receiver, index)
                 if (typeName != null) {
-                    val iface = index.resolveInterface(typeName)
-                    val member = iface?.members?.get(memberName)?.firstOrNull()
+                    val resolvedMember = index.resolveMember(typeName, memberName)
+                    val member = resolvedMember?.first
                     if (member != null) {
                         val phys = firstMemberPsi(project, index, typeName, memberName)
                         JsSymbolPsiElement(
-                            symbol.manager, symbol.language, memberName, typeName, member.doc,
+                            symbol.manager, symbol.language, memberName, resolvedMember.declaringType, member.doc,
                             member = member, navigationTarget = phys,
                         )
-                    } else null
+                    } else {
+                        val targets = index.getAnyMemberPsiElements(project, memberName, typeName) ?: return null
+                        val first = targets.firstOrNull() ?: return null
+                        val ifaceName = (first as? JsMemberNavigationTarget)?.declaringTypeName
+                        val memberDoc = ifaceName?.let { index.resolveMember(it, memberName)?.first?.doc }
+                        JsSymbolPsiElement(
+                            symbol.manager, symbol.language, memberName, ifaceName, memberDoc,
+                            navigationTarget = first,
+                        )
+                    }
                 } else {
                     val targets = index.getAnyMemberPsiElements(project, memberName, null) ?: return null
                     val first = targets.firstOrNull() ?: return null
-                    val phys = unwrapMemberNavigationWrapper(first)
                     val ifaceName = (first as? JsMemberNavigationTarget)?.declaringTypeName
-                    val memberDoc = ifaceName?.let { index.resolveInterface(it)?.members?.get(memberName)?.firstOrNull()?.doc }
+                    val memberDoc = ifaceName?.let { index.resolveMember(it, memberName)?.first?.doc }
                     JsSymbolPsiElement(
                         symbol.manager, symbol.language, memberName, ifaceName, memberDoc,
-                        navigationTarget = phys,
+                        navigationTarget = first,
                     )
                 }
             }

@@ -18,6 +18,12 @@ object JsResolveUtil {
      */
     fun resolveType(element: PsiElement?, index: JsSymbolIndex, depth: Int = 0): String? {
         if (element == null || depth > 5) return null
+        JsInteropPsi.jsQualifiedSymbolText(element)?.let { full ->
+            val segments = JsInteropChain.segmentsFromFullText(full)
+            if (segments != null && segments.isNotEmpty()) {
+                index.resolveJsChainType(segments)?.let { return it }
+            }
+        }
         
         return when (element) {
             is ClEditorSymbol -> {
@@ -69,15 +75,28 @@ object JsResolveUtil {
                 null
             }
             is ClList -> {
-                // 4. Method call: (.method receiver ...)
                 val head = getHead(element)
+                if (head is ClEditorSymbol && head.text == "set!") {
+                    val children = element.children.filter { it !is PsiWhiteSpace && it !is PsiComment && it.text != "(" && it.text != ")" }
+                    val valueArg = children.getOrNull(2)
+                    if (valueArg != null) return resolveType(valueArg, index, depth + 1)
+                    return null
+                }
+                if (head is ClEditorSymbol) {
+                    val ht = head.text
+                    if (ht == "goog.object/get" || ht == "js/goog.object.get") {
+                        val children = element.children.filter { it !is PsiWhiteSpace && it !is PsiComment && it.text != "(" && it.text != ")" }
+                        val obj = children.getOrNull(1)
+                        if (obj != null) return resolveType(obj, index, depth + 1)
+                    }
+                }
+                // Method call: (.method receiver ...)
                 if (head is ClEditorSymbol && head.text.startsWith(".")) {
                     val memberName = head.text.removePrefix(".").removePrefix("-")
                     val receiver = getSecondElement(element)
                     val receiverType = resolveType(receiver, index, depth + 1) ?: return null
-                    
-                    val iface = index.resolveInterface(receiverType)
-                    val member = iface?.members?.get(memberName)?.firstOrNull()
+
+                    val member = index.resolveMember(receiverType, memberName)?.first
                     return if (member != null) {
                         if (member.kind == "method") member.returns else member.type
                     } else null
@@ -115,18 +134,24 @@ object JsResolveUtil {
     }
 
     private fun findBindingInitializer(definition: PsiElement): PsiElement? {
-        // In Cursive, a let binding [sym init] often has sym and init as siblings
-        // within a ClVector.
         val parent = definition.parent ?: return null
-        if (parent.javaClass.simpleName.contains("ClVector")) {
-            val children = parent.children.filter { it !is PsiWhiteSpace && it !is PsiComment }
-            val idx = children.indexOf(definition)
-            if (idx >= 0 && idx + 1 < children.size) {
-                return children[idx + 1]
-            }
+        if (!parent.javaClass.simpleName.contains("ClVector")) return null
+        val list = parent.parent as? ClList ?: return null
+        val listHead = getHead(list) as? ClEditorSymbol ?: return null
+        if (!isLetLikeBindingHead(listHead.text)) return null
+        val children = parent.children.filter { it !is PsiWhiteSpace && it !is PsiComment }
+        val idx = children.indexOf(definition)
+        if (idx >= 0 && idx + 1 < children.size) {
+            return children[idx + 1]
         }
         return null
     }
+
+    private fun isLetLikeBindingHead(head: String): Boolean =
+        when (head) {
+            "let", "let*", "binding", "if-let", "if-let*", "when-let", "when-let*", "when-some" -> true
+            else -> false
+        }
 
     private fun getHead(list: ClList): PsiElement? {
         return list.children.firstOrNull { it !is PsiWhiteSpace && it !is PsiComment && it.text != "(" }

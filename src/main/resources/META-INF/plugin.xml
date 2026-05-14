@@ -43,6 +43,15 @@
                 language="ClojureScript"
                 implementationClass="com.cursivejssupport.completion.ClojureScriptCompletionContributor"/>
 
+        <completion.confidence
+                order="first"
+                language="Clojure"
+                implementationClass="com.cursivejssupport.completion.JsInteropCompletionConfidence"/>
+        <completion.confidence
+                order="first"
+                language="ClojureScript"
+                implementationClass="com.cursivejssupport.completion.JsInteropCompletionConfidence"/>
+
         <lang.documentationProvider
                 language="Clojure"
                 implementationClass="com.cursivejssupport.completion.ClojureScriptDocumentationProvider"/>

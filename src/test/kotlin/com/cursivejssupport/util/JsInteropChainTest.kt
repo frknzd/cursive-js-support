@@ -23,8 +23,9 @@ class JsInteropChainTest {
     }
 
     @Test
-    fun segmentsFromFullTextTrimsTrailingDot() {
-        val seg = JsInteropChain.segmentsFromFullText("js/document.createRange.")!!
-        assertEquals(listOf("document", "createRange"), seg)
+    fun reconcileAppendsVirtualDotWhenEditorHasDot() {
+        assertEquals("document.", JsInteropChain.reconcileJsPathRawWithTrailingEditorDot("document", true))
+        assertEquals("document", JsInteropChain.reconcileJsPathRawWithTrailingEditorDot("document", false))
+        assertEquals("document.", JsInteropChain.reconcileJsPathRawWithTrailingEditorDot("document.", true))
     }
 }

@@ -76,6 +76,27 @@ class DtsParserTest {
     }
 
     @Test
+    fun parsesInterfaceHeritageClauses() {
+        val nodeExecutable = DtsParser.findNodeExecutable()
+        assumeNotNull(nodeExecutable)
+
+        DtsParser(nodeExecutable!!).use { parser ->
+            val dtsContent = """
+                interface AbstractRange {
+                    readonly startContainer: Node;
+                }
+                interface Range extends AbstractRange {
+                    cloneContents(): DocumentFragment;
+                }
+            """.trimIndent()
+
+            val symbols = parser.parse(mapOf("range.d.ts" to dtsContent))
+            assertEquals(listOf("AbstractRange"), symbols.interfaces["Range"]?.extends)
+            assertTrue(symbols.interfaces["AbstractRange"]?.members?.containsKey("startContainer") == true)
+        }
+    }
+
+    @Test
     fun testParseMultipleFiles() {
         val nodeExecutable = DtsParser.findNodeExecutable()
         assumeNotNull(nodeExecutable)

@@ -59,10 +59,13 @@ internal object JsInteropCompletionPrefixes {
         val len = document.textLength
         val off = min(caretOffset, len)
         if (off <= 0) return false
-        val start = max(0, off - 520)
-        val slice = document.getText(TextRange(start, off))
+        return InteropCompletionIntentParser.shouldSuppressInvalidSlash(document.charsSequence, off, '/')
+    }
+
+    /** Text-only variant for tests and for callers that already have a slice ending at the caret. */
+    fun shouldSuppressInvalidJsSlashFromEditorSlice(slice: String): Boolean {
         if (shouldSuppressAutoPopupAfterInvalidJsSlash(slice)) return true
-        if (document.charsSequence[off - 1] != '/') return false
+        if (slice.isEmpty() || slice.last() != '/') return false
         val jsAt = slice.lastIndexOf("js/")
         if (jsAt < 0) return false
         val tail = slice.substring(jsAt)
@@ -101,12 +104,8 @@ internal object JsInteropCompletionPrefixes {
         val userJs = userText.lastIndexOf("js/").takeIf { it >= 0 }?.let {
             normalizedAndCollapsedJsCandidate(stripDummy(userText.substring(it)))
         }
-        val sym = JsInteropPsi.enclosingEditorSymbol(position)
-        val symJs = if (sym?.namespace == "js" && !sym.name.isNullOrBlank()) {
-            normalizedAndCollapsedJsCandidate(stripDummy("js/${sym.name}"))
-        } else {
-            null
-        }
+        val symJs = JsInteropPsi.jsQualifiedSymbolText(position)
+            ?.let { normalizedAndCollapsedJsCandidate(stripDummy(it)) }
         val chosen = listOfNotNull(docJs, userJs, symJs)
             .filter { it.startsWith("js/") }
             .maxByOrNull { it.length }

@@ -5,6 +5,7 @@ import com.cursivejssupport.parser.JsInterface
 import com.cursivejssupport.parser.JsMember
 import com.cursivejssupport.parser.JsVariableInfo
 import com.cursivejssupport.parser.ParsedSymbols
+import com.cursivejssupport.util.JsInteropChain
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -30,6 +31,17 @@ class JsInteropJsCompletionSubBranchTest {
         )
         index.setLoaded(true)
         return index
+    }
+
+    @Test
+    fun `reconciled path raw document plus editor dot routes members after global`() {
+        val index = indexWithDocument()
+        val pathRaw = JsInteropChain.reconcileJsPathRawWithTrailingEditorDot("document", editorCharBeforeCaretIsDot = true)
+        val pathTrimmed = pathRaw.trimEnd('.')
+        assertEquals(
+            JsInteropJsCompletionSubBranch.MembersAfterGlobal,
+            classifyJsInteropJsCompletionSubBranch(pathRaw, pathTrimmed, index),
+        )
     }
 
     @Test

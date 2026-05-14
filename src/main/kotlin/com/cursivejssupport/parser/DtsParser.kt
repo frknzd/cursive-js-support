@@ -38,6 +38,7 @@ data class JsMember(
 
 data class JsInterface(
     val location: JsLocation? = null,
+    val extends: List<String> = emptyList(),
     val members: Map<String, List<JsMember>> = emptyMap()
 )
 

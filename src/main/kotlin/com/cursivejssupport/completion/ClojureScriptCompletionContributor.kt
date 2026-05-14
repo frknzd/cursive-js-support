@@ -10,8 +10,6 @@ import com.cursivejssupport.util.JsInteropChain
 import com.cursivejssupport.util.JsInteropPsi
 import com.cursivejssupport.util.JsResolveUtil
 import com.intellij.codeInsight.completion.*
-import com.intellij.codeInsight.lookup.LookupElementBuilder
-import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import com.intellij.patterns.PlatformPatterns
 import com.intellij.psi.PsiComment
@@ -38,7 +36,7 @@ class ClojureScriptCompletionContributor : CompletionContributor() {
             val doc = position.containingFile.viewProvider.document
             if (doc != null) {
                 val offset = min(position.textOffset, doc.textLength)
-                if (JsInteropCompletionPrefixes.shouldSuppressInvalidJsSlashAutoPopup(doc, offset)) {
+                if (InteropCompletionIntentParser.shouldSuppressInvalidSlash(doc.charsSequence, offset, '/')) {
                     InteropDebugLog.debug(
                         "[interop-completion] invokeAutoPopup: suppress '/' (invalid js/.../ tail)",
                     )
@@ -103,8 +101,6 @@ private fun isLikelyInteropPropertyDash(position: PsiElement): Boolean {
 }
 
 private class ClojureScriptCompletionProvider : CompletionProvider<CompletionParameters>() {
-    private val log = Logger.getInstance(ClojureScriptCompletionProvider::class.java)
-
     companion object {
         private val completionInvocationSeq = AtomicLong(0)
     }
@@ -140,6 +136,17 @@ private class ClojureScriptCompletionProvider : CompletionProvider<CompletionPar
         val project: Project = originalFile.project
         val requirePrefix = NsRequireCompletionUtil.npmPackagePrefixInRequire(file, parameters.offset)
         val anchorPath = file.virtualFile?.path
+        val aliases = NsAliasResolver.resolveAliases(file)
+        val index = JsSymbolIndex.getInstance()
+        val recentTyped = InteropCompletionIntentStore.recentFor(parameters.editor, parameters.offset)
+        val intent = InteropCompletionIntentParser.parse(
+            parameters.editor.document.charsSequence,
+            parameters.offset,
+            userText,
+            recentTyped?.char,
+            aliases,
+        )
+        val route = InteropCompletionRouter.route(intent, index, aliases)
 
         val effForJsBranch = JsInteropCompletionPrefixes.effectiveJsInteropUserTextForJsBranch(
             parameters,
@@ -150,12 +157,13 @@ private class ClojureScriptCompletionProvider : CompletionProvider<CompletionPar
         val effNorm = JsInteropCompletionPrefixes.normalizedEffectiveJsForCompletion(effForJsBranch)
         val eff = JsInteropCompletionPrefixes.collapseInvalidSlashesInJsInteropNormalizedPrefix(effNorm)
         val jsInteropLike =
-            eff.startsWith("js/") ||
+            route.kind in setOf(
+                InteropCompletionRouteKind.JsGlobals,
+                InteropCompletionRouteKind.JsGlobalMembers,
+                InteropCompletionRouteKind.JsChainMembers,
+            ) ||
+                eff.startsWith("js/") ||
                 JsInteropPsi.enclosingEditorSymbol(position)?.namespace == "js"
-
-        val aliases = NsAliasResolver.resolveAliases(file)
-
-        val index = JsSymbolIndex.getInstance()
 
         InteropDebugLog.info(
             "[interop-completion] >>> contributor=ClojureScriptCompletionContributor invokeId=$invokeId " +
@@ -165,7 +173,8 @@ private class ClojureScriptCompletionProvider : CompletionProvider<CompletionPar
             "[interop-completion] start file=${file.name} offset=${parameters.offset} anchor=${anchorPath ?: "null"} " +
                 "indexLoaded=${index.isLoaded} userText='$userText' effRaw='$effForJsBranch' effNorm='$effNorm' eff='$eff' " +
                 "jsInteropLike=$jsInteropLike requirePrefix=${requirePrefix?.let { "'$it'" } ?: "null"} " +
-                "typedNs=$typedNamespace",
+                "typedNs=$typedNamespace intent=${intent.kind} typedChar=${intent.typedChar} route=${route.kind} " +
+                "logical='${intent.logicalPrefix}' terminalDot=${intent.hadTerminalDot} invalidSlash=${intent.hadInvalidSlash}",
         )
         when {
             requirePrefix != null -> {
@@ -173,9 +182,7 @@ private class ClojureScriptCompletionProvider : CompletionProvider<CompletionPar
                 val pkgs = NpmPackageResolver(project).discoverAllDependencyPackageNames(anchorPath)
                 for (pkg in pkgs) {
                     reqResult.addElement(
-                        LookupElementBuilder.create(pkg)
-                            .withPresentableText(pkg)
-                            .withIcon(JsInteropCompletionIcons.forNpmNamespaceAlias())
+                        JsLookupFactory.npmAlias(pkg, "npm")
                     )
                 }
                 InteropDebugLog.debug("[interop-completion] contributed requireNpm count=${pkgs.size}")
@@ -185,12 +192,18 @@ private class ClojureScriptCompletionProvider : CompletionProvider<CompletionPar
                 )
             }
 
+            route.kind == InteropCompletionRouteKind.None -> {
+                InteropDebugLog.info(
+                    "[interop-completion] branch=none invokeId=$invokeId reason=${if (intent.hadInvalidSlash) "invalidSlash" else "routeNone"}",
+                )
+            }
+
             jsInteropLike -> {
                 if (!index.isLoaded) {
                     InteropDebugLog.info("[interop-completion] js branch: skipped (JsSymbolIndex not loaded)")
                     return
                 }
-                if (!eff.startsWith("js/")) {
+                if (!eff.startsWith("js/") && intent.kind != InteropCompletionKind.Js) {
                     InteropDebugLog.info(
                         "[interop-completion] js branch: skipped effRaw='$effForJsBranch' effNorm='$effNorm' eff='$eff' " +
                             "(expected js/ prefix; check document slice / PSI)",
@@ -199,18 +212,35 @@ private class ClojureScriptCompletionProvider : CompletionProvider<CompletionPar
                 }
                 val jsPm = JsInteropChainPrefixMatcher.fromEffectiveJs(eff)
                     ?: CaseInsensitivePlainPrefixMatcher(eff)
-                val jsResult = result.withPrefixMatcher(jsPm)
-                val pathRawBase = JsInteropChain.pathAfterJsPrefixRaw(eff) ?: run {
+                val jsResult = result.withPrefixMatcher(
+                    if (intent.kind == InteropCompletionKind.Js && (intent.hadTerminalDot || intent.memberPrefix.isNotEmpty())) {
+                        CaseInsensitivePlainPrefixMatcher(intent.memberPrefix)
+                    } else {
+                        jsPm
+                    },
+                )
+                val pathRawBase = if (intent.kind == InteropCompletionKind.Js && intent.receiverSegments.isNotEmpty()) {
+                    intent.jsPathRaw
+                } else JsInteropChain.pathAfterJsPrefixRaw(eff) ?: run {
                     InteropDebugLog.info("[interop-completion] js branch: pathAfterJsPrefixRaw null for eff='$eff'")
                     return
                 }
                 val doc = parameters.editor.document
                 val caret = min(parameters.offset, doc.textLength)
                 val editorDot = caret > 0 && doc.charsSequence[caret - 1] == '.'
-                val pathRaw = JsInteropChain.reconcileJsPathRawWithTrailingEditorDot(pathRawBase, editorDot)
+                val pathRaw = if (intent.kind == InteropCompletionKind.Js) {
+                    pathRawBase
+                } else {
+                    JsInteropChain.reconcileJsPathRawWithTrailingEditorDot(pathRawBase, editorDot)
+                }
                 val pathTrimmed = pathRaw.trimEnd('.')
                 val pathSegments = pathTrimmed.split('.').map { it.trim() }.filter { it.isNotEmpty() }
-                val subBranch = classifyJsInteropJsCompletionSubBranch(pathRaw, pathTrimmed, index)
+                val subBranch = when (route.kind) {
+                    InteropCompletionRouteKind.JsGlobalMembers -> JsInteropJsCompletionSubBranch.MembersAfterGlobal
+                    InteropCompletionRouteKind.JsChainMembers -> JsInteropJsCompletionSubBranch.ChainMembers
+                    InteropCompletionRouteKind.JsGlobals -> JsInteropJsCompletionSubBranch.GlobalsFiltered
+                    else -> classifyJsInteropJsCompletionSubBranch(pathRaw, pathTrimmed, index)
+                }
                 val globalTypeForHead = pathSegments.singleOrNull()?.let { index.resolveGlobalType(it) }
                 val callHead = isJsInteropHeadOfEnclosingList(position)
                 val methodsOnly =
@@ -258,7 +288,7 @@ private class ClojureScriptCompletionProvider : CompletionProvider<CompletionPar
                 )
             }
 
-            userText.startsWith(".") -> {
+            route.kind == InteropCompletionRouteKind.DotMember || userText.startsWith(".") -> {
                 if (!index.isLoaded) {
                     InteropDebugLog.info("[interop-completion] branch=memberDot skipped (JsSymbolIndex not loaded)")
                 } else {
@@ -277,25 +307,29 @@ private class ClojureScriptCompletionProvider : CompletionProvider<CompletionPar
                 }
             }
 
-            typedNamespace != null && aliases.containsKey(typedNamespace) -> {
+            route.kind in setOf(InteropCompletionRouteKind.NpmExports, InteropCompletionRouteKind.NpmExportMembers) ||
+                (typedNamespace != null && aliases.containsKey(typedNamespace)) -> {
                 if (!index.isLoaded) {
                     InteropDebugLog.info("[interop-completion] branch=npmTypedNs skipped (JsSymbolIndex not loaded)")
                 } else {
-                    val pkg = aliases[typedNamespace]!!
+                    val ns = intent.namespace ?: typedNamespace!!
+                    val pkg = aliases[ns]!!
                     val stripped = stripCompletionDummy(userText)
-                    val prefix = "$typedNamespace/"
-                    val rel = npmAliasRelativeTail(typedNamespace, prefix, stripped, position)
-                    val exportKey = npmAliasExportKeySegment(rel)
+                    val prefix = "$ns/"
+                    val rel = npmAliasRelativeTail(ns, prefix, stripped, position)
+                    val exportKey = intent.exportName?.takeIf { it.isNotBlank() } ?: npmAliasExportKeySegment(rel)
                     val exportCount = index.npmExportNames(pkg).size
-                    val memberMode = npmAliasWantsMemberCompletion(rel, exportKey, userText, index, pkg)
+                    val memberMode = route.kind == InteropCompletionRouteKind.NpmExportMembers ||
+                        npmAliasWantsMemberCompletion(rel, exportKey, userText, index, pkg)
                     val n = if (memberMode) {
-                        addNpmAliasExportMemberCompletions(typedNamespace, pkg, exportKey, rel, index, safeResult)
+                        val npmResult = result.withPrefixMatcher(CaseInsensitivePlainPrefixMatcher(intent.memberPrefix))
+                        addNpmAliasExportMemberCompletions(ns, pkg, exportKey, rel, intent, index, npmResult)
                     } else {
-                        addNpmExports(typedNamespace, pkg, index, safeResult)
+                        addNpmExports(ns, pkg, index, safeResult)
                     }
                     InteropDebugLog.debug("[interop-completion] contributed npmTypedNs count=$n")
                     InteropDebugLog.info(
-                        "[interop-completion] branch=npmTypedNs ns=$typedNamespace pkg=$pkg exportSuggestions=$exportCount " +
+                        "[interop-completion] branch=npmTypedNs ns=$ns pkg=$pkg exportSuggestions=$exportCount " +
                             "memberMode=$memberMode",
                     )
                 }
@@ -305,8 +339,7 @@ private class ClojureScriptCompletionProvider : CompletionProvider<CompletionPar
                 var contributed = 0
                 if (userText == "js") {
                     safeResult.addElement(
-                        LookupElementBuilder.create("js/")
-                            .withIcon(JsInteropCompletionIcons.forJsInteropRoot()),
+                        JsLookupFactory.jsRoot(),
                     )
                     contributed++
                 }
@@ -317,9 +350,7 @@ private class ClojureScriptCompletionProvider : CompletionProvider<CompletionPar
 
                 for ((aliasName, pkgName) in aliases) {
                     safeResult.addElement(
-                        LookupElementBuilder.create(aliasName)
-                            .withTypeText(pkgName)
-                            .withIcon(JsInteropCompletionIcons.forNpmNamespaceAlias())
+                        JsLookupFactory.npmAlias(aliasName, pkgName)
                     )
                     contributed++
                 }
@@ -365,36 +396,45 @@ private class ClojureScriptCompletionProvider : CompletionProvider<CompletionPar
         packageName: String,
         exportKey: String,
         rel: String,
+        intent: InteropCompletionIntent,
         index: JsSymbolIndex,
         result: CompletionResultSet,
     ): Int {
-        val afterExport = if (rel.startsWith(exportKey)) rel.drop(exportKey.length).trimStart('.') else rel
-        val rest = afterExport
-        val restTrimmed = rest.trimEnd('.')
-        val allSegs = if (restTrimmed.isEmpty()) {
-            emptyList()
+        val afterExport = if (rel.startsWith(exportKey)) {
+            val tail = rel.drop(exportKey.length)
+            when {
+                tail.startsWith('/') -> ""
+                else -> tail.trimStart('.')
+            }
         } else {
-            restTrimmed.split('.')
-                .map { stripCompletionDummy(it).substringBefore('/').trim() }
-                .filter { it.isNotEmpty() }
+            rel
         }
-        val dottedRestEnds = rest.endsWith('.') || (rest.isEmpty() && rel.endsWith('.'))
-        val receiverSegs = when {
-            allSegs.isEmpty() -> emptyList()
-            dottedRestEnds -> allSegs
-            else -> allSegs.dropLast(1)
+        val rest = afterExport
+        val receiverSegs = intent.npmMemberSegments.ifEmpty {
+            val restTrimmed = rest.trimEnd('.')
+            val allSegs = if (restTrimmed.isEmpty()) {
+                emptyList()
+            } else {
+                restTrimmed.split('.')
+                    .map { stripCompletionDummy(it).substringBefore('/').trim() }
+                    .filter { it.isNotEmpty() }
+            }
+            val dottedRestEnds = rest.endsWith('.') || (rest.isEmpty() && rel.endsWith('.'))
+            when {
+                allSegs.isEmpty() -> emptyList()
+                dottedRestEnds -> allSegs
+                else -> allSegs.dropLast(1)
+            }
         }
         var receiverType = index.resolveNpmExportType(packageName, exportKey)
             ?: return addNpmExports(typedNamespace, packageName, index, result)
         for (seg in receiverSegs) {
-            val ifaceStep = index.resolveInterface(receiverType)
-                ?: return addNpmExports(typedNamespace, packageName, index, result)
-            val m = ifaceStep.members[seg]?.firstOrNull()
+            val m = index.resolveMember(receiverType, seg)?.first
                 ?: return addNpmExports(typedNamespace, packageName, index, result)
             receiverType = if (m.kind == "method") m.returns else m.type
         }
-        val finalIface = index.resolveInterface(receiverType)
-            ?: return addNpmExports(typedNamespace, packageName, index, result)
+        val members = index.resolveMembers(receiverType)
+            .mapValues { (_, resolved) -> resolved.overloads }
         val chainBase = buildString {
             append(typedNamespace).append('/').append(exportKey)
             for (s in receiverSegs) {
@@ -402,7 +442,7 @@ private class ClojureScriptCompletionProvider : CompletionProvider<CompletionPar
             }
             append('.')
         }
-        return emitMembersForJsChain(finalIface.members, chainBase, receiverType, result)
+        return emitMembersForJsChain(members, chainBase, receiverType, result)
     }
 
     private fun addJsChainMemberCompletions(userText: String, index: JsSymbolIndex, result: CompletionResultSet): Int {
@@ -430,19 +470,18 @@ private class ClojureScriptCompletionProvider : CompletionProvider<CompletionPar
             )
             return 0
         }
-        val iface = index.resolveInterface(receiverType) ?: run {
-            InteropDebugLog.info(
-                "[interop-completion] addJsChainMemberCompletions: no interface for type='$receiverType'",
-            )
+        val members = index.resolveMembers(receiverType)
+        if (members.isEmpty()) {
+            InteropDebugLog.info("[interop-completion] addJsChainMemberCompletions: no members for type='$receiverType'")
             return 0
         }
-        val memberCount = iface.members.size
+        val memberCount = members.size
         InteropDebugLog.debug(
             "[interop-completion] addJsChainMemberCompletions: receiverType=$receiverType members=$memberCount " +
                 "resultPrefix='${result.prefixMatcher.prefix}'",
         )
         val chainBase = "js/" + receiverParts.joinToString(".") + "."
-        return emitMembersForJsChain(iface.members, chainBase, receiverType, result)
+        return emitMembersForJsChain(members.mapValues { (_, resolved) -> resolved.overloads }, chainBase, receiverType, result)
     }
 
     private fun addJsMembersAfterGlobal(
@@ -452,9 +491,9 @@ private class ClojureScriptCompletionProvider : CompletionProvider<CompletionPar
         memberKinds: Set<String>? = null,
     ): Int {
         val typeName = index.resolveGlobalType(globalName) ?: return 0
-        val iface = index.resolveInterface(typeName) ?: return 0
+        val members = index.resolveMembers(typeName)
         val chainBase = "js/$globalName."
-        return emitMembersForJsChain(iface.members, chainBase, typeName, result, memberKinds = memberKinds)
+        return emitMembersForJsChain(members.mapValues { (_, resolved) -> resolved.overloads }, chainBase, typeName, result, memberKinds = memberKinds)
     }
 
     /**
@@ -486,20 +525,14 @@ private class ClojureScriptCompletionProvider : CompletionProvider<CompletionPar
             if (p.isNotEmpty() && !globalName.startsWith(p, ignoreCase = true)) continue
             val typeName = index.resolveGlobalType(globalName) ?: continue
             result.addElement(
-                LookupElementBuilder.create("js/$globalName")
-                    .withPresentableText(globalName)
-                    .withTypeText(typeName)
-                    .withIcon(JsInteropCompletionIcons.forGlobalVariable()),
+                JsLookupFactory.global(globalName, typeName),
             )
             n++
         }
         for (fnName in index.allFunctionNames()) {
             if (p.isNotEmpty() && !fnName.startsWith(p, ignoreCase = true)) continue
             result.addElement(
-                LookupElementBuilder.create("js/$fnName")
-                    .withPresentableText(fnName)
-                    .withTypeText("function")
-                    .withIcon(JsInteropCompletionIcons.forGlobalFunction()),
+                JsLookupFactory.globalFunction(fnName),
             )
             n++
         }
@@ -520,27 +553,11 @@ private class ClojureScriptCompletionProvider : CompletionProvider<CompletionPar
             val insert = chainBase + memberName
             when (first.kind) {
                 "method" -> {
-                    val sig = first.params.joinToString(", ") { p ->
-                        if (p.rest) "...${p.name}: ${p.type}"
-                        else if (p.optional) "${p.name}?: ${p.type}"
-                        else "${p.name}: ${p.type}"
-                    }
-                    result.addElement(
-                        LookupElementBuilder.create(insert)
-                            .withPresentableText(memberName)
-                            .withTypeText(receiverTypeLabel)
-                            .withTailText("($sig)", true)
-                            .withIcon(JsInteropCompletionIcons.forJsMemberKind("method")),
-                    )
+                    result.addElement(JsLookupFactory.jsMember(memberName, receiverTypeLabel, first, insert))
                     n++
                 }
                 "property" -> {
-                    result.addElement(
-                        LookupElementBuilder.create(insert)
-                            .withPresentableText(memberName)
-                            .withTypeText(receiverTypeLabel)
-                            .withIcon(JsInteropCompletionIcons.forJsMemberKind("property")),
-                    )
+                    result.addElement(JsLookupFactory.jsMember(memberName, receiverTypeLabel, first, insert))
                     n++
                 }
             }
@@ -559,8 +576,9 @@ private class ClojureScriptCompletionProvider : CompletionProvider<CompletionPar
         val typeName = JsResolveUtil.resolveType(receiver, index)
 
         return if (typeName != null) {
-            val iface = index.resolveInterface(typeName) ?: return 0
-            emitMembers(iface.members, typeLabel = null, result)
+            val members = index.resolveMembers(typeName)
+                .mapValues { (_, resolved) -> resolved.overloads }
+            emitMembers(members, typeLabel = null, result)
         } else {
             val pm = result.prefixMatcher.prefix
             val memberPrefix = pm.removePrefix(".-").removePrefix(".").trim()
@@ -583,26 +601,10 @@ private class ClojureScriptCompletionProvider : CompletionProvider<CompletionPar
     ) {
         when (first.kind) {
             "method" -> {
-                val sig = first.params.joinToString(", ") { p ->
-                    if (p.rest) "...${p.name}: ${p.type}"
-                    else if (p.optional) "${p.name}?: ${p.type}"
-                    else "${p.name}: ${p.type}"
-                }
-                result.addElement(
-                    LookupElementBuilder.create(".$memberName")
-                        .withPresentableText(".$memberName")
-                        .withTypeText(typeLabel)
-                        .withTailText("($sig)", true)
-                        .withIcon(JsInteropCompletionIcons.forJsMemberKind("method")),
-                )
+                result.addElement(JsLookupFactory.dotMember(memberName, typeLabel, first))
             }
             "property" -> {
-                result.addElement(
-                    LookupElementBuilder.create(".-$memberName")
-                        .withPresentableText(".-$memberName")
-                        .withTypeText(typeLabel)
-                        .withIcon(JsInteropCompletionIcons.forJsMemberKind("property")),
-                )
+                result.addElement(JsLookupFactory.dotMember(memberName, typeLabel, first))
             }
         }
     }
@@ -617,27 +619,11 @@ private class ClojureScriptCompletionProvider : CompletionProvider<CompletionPar
             val first = overloads.firstOrNull() ?: continue
             when (first.kind) {
                 "method" -> {
-                    val sig = first.params.joinToString(", ") { p ->
-                        if (p.rest) "...${p.name}: ${p.type}"
-                        else if (p.optional) "${p.name}?: ${p.type}"
-                        else "${p.name}: ${p.type}"
-                    }
-                    result.addElement(
-                        LookupElementBuilder.create(".$memberName")
-                            .withPresentableText(".$memberName")
-                            .withTypeText(typeLabel ?: first.returns)
-                            .withTailText("($sig)", true)
-                            .withIcon(JsInteropCompletionIcons.forJsMemberKind("method")),
-                    )
+                    result.addElement(JsLookupFactory.dotMember(memberName, typeLabel, first))
                     n++
                 }
                 "property" -> {
-                    result.addElement(
-                        LookupElementBuilder.create(".-$memberName")
-                            .withPresentableText(".-$memberName")
-                            .withTypeText(typeLabel ?: first.type)
-                            .withIcon(JsInteropCompletionIcons.forJsMemberKind("property")),
-                    )
+                    result.addElement(JsLookupFactory.dotMember(memberName, typeLabel, first))
                     n++
                 }
             }
@@ -653,16 +639,8 @@ private class ClojureScriptCompletionProvider : CompletionProvider<CompletionPar
     ): Int {
         var n = 0
         for (exportName in index.npmExportNames(packageName)) {
-            val icon = if (exportName == "default") {
-                JsInteropCompletionIcons.forNpmDefaultExport()
-            } else {
-                JsInteropCompletionIcons.forNpmNamedExport()
-            }
             result.addElement(
-                LookupElementBuilder.create("$namespace/$exportName")
-                    .withPresentableText(exportName)
-                    .withTypeText(packageName)
-                    .withIcon(icon),
+                JsLookupFactory.npmExport(namespace, packageName, exportName),
             )
             n++
         }

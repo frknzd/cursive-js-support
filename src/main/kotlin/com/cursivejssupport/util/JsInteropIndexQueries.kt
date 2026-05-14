@@ -14,7 +14,7 @@ object JsInteropIndexQueries {
         if (parts.size < 2) return false
         val parentType = index.resolveJsChainType(parts.dropLast(1)) ?: return false
         val last = parts.last()
-        return index.resolveInterface(parentType)?.members?.containsKey(last) == true
+        return index.resolveMember(parentType, last) != null
     }
 
     /** Full editor symbol text and optional PSI namespace/name (e.g. `js/document.x` or ns=`js`, name=`document.x`). */
@@ -27,7 +27,7 @@ object JsInteropIndexQueries {
             else -> {
                 val parentType = index.resolveJsChainType(seg.dropLast(1)) ?: return false
                 val last = seg.last()
-                index.resolveInterface(parentType)?.members?.containsKey(last) == true
+                index.resolveMember(parentType, last) != null
             }
         }
     }

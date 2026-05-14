@@ -16,6 +16,7 @@ fun ParsedSymbols.withLogicalBundledLibPaths(): ParsedSymbols {
     val ifaces = interfaces.mapValues { (_, iface) ->
         JsInterface(
             location = mapLoc(iface.location),
+            extends = iface.extends,
             members = iface.members.mapValues { (_, overloads) ->
                 overloads.map { mapMember(it) }
             }

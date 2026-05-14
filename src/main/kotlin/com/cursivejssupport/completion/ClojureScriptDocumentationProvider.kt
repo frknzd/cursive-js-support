@@ -69,8 +69,9 @@ class ClojureScriptDocumentationProvider : AbstractDocumentationProvider() {
         if (segments.size < 2) return null
         val parentType = index.resolveJsChainType(segments.dropLast(1)) ?: return null
         val last = segments.last()
-        val member = index.resolveInterface(parentType)?.members?.get(last)?.firstOrNull() ?: return null
-        return buildDocForMember(parentType, last, member)
+        val resolvedMember = index.resolveMember(parentType, last) ?: return null
+        val member = resolvedMember.first ?: return null
+        return buildDocForMember(resolvedMember.declaringType, last, member)
     }
 
     // ─── js/ globals ─────────────────────────────────────────────────────────
@@ -96,10 +97,9 @@ class ClojureScriptDocumentationProvider : AbstractDocumentationProvider() {
 
         val typeName = JsResolveUtil.resolveType(receiver, index)
         if (typeName != null) {
-            val iface    = index.resolveInterface(typeName) ?: return null
-            val overloads  = iface.members[memberName] ?: return null
-            val first      = overloads.firstOrNull() ?: return null
-            return buildDocForMember(typeName, memberName, first)
+            val resolvedMember = index.resolveMember(typeName, memberName) ?: return null
+            val first = resolvedMember.first ?: return null
+            return buildDocForMember(resolvedMember.declaringType, memberName, first)
         } else {
             // Pooled path: no clear receiver type, look in all interfaces
             // Limit to avoid performance issues

@@ -131,9 +131,14 @@ function collectExportDefaultExpression(node, result, filename, sourceFile) {
 function mergeInterface(node, result, filename, sourceFile) {
     var name = node.name.text;
     if (!Object.prototype.hasOwnProperty.call(result.interfaces, name)) {
-        result.interfaces[name] = { location: getLocation(node, filename, sourceFile), members: Object.create(null) };
+        result.interfaces[name] = { location: getLocation(node, filename, sourceFile), extends: [], members: Object.create(null) };
     }
-    var members = result.interfaces[name].members;
+    var iface = result.interfaces[name];
+    var bases = extractHeritageNames(node);
+    for (var b = 0; b < bases.length; b++) {
+        if (iface.extends.indexOf(bases[b]) < 0) iface.extends.push(bases[b]);
+    }
+    var members = iface.members;
     for (var i = 0; i < node.members.length; i++) {
         var m = node.members[i];
         if (!m.name || !m.name.text) continue;
@@ -147,6 +152,22 @@ function mergeInterface(node, result, filename, sourceFile) {
             members[memberName].push({ kind: 'property', type: typeName(m.type), optional: !!m.questionToken, doc: docP, location: getLocation(m, filename, sourceFile) });
         }
     }
+}
+
+function extractHeritageNames(node) {
+    var out = [];
+    if (!node.heritageClauses) return out;
+    for (var i = 0; i < node.heritageClauses.length; i++) {
+        var clause = node.heritageClauses[i];
+        if (!clause.types) continue;
+        for (var j = 0; j < clause.types.length; j++) {
+            var t = clause.types[j];
+            var expr = t.expression;
+            var name = expr && (expr.text || (expr.name && expr.name.text));
+            if (name) out.push(name);
+        }
+    }
+    return out;
 }
 
 function collectVariables(node, result, filename, sourceFile) {

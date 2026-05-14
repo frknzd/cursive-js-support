@@ -117,4 +117,66 @@ class JsSymbolIndexTest {
         )
         assertTrue(index.isKnownNpmExport("demo-pkg", "default"))
     }
+
+    @Test
+    fun resolveNpmExportTypeFromVariablesAndFunctions() {
+        val index = JsSymbolIndex()
+        index.loadNpmPackage(
+            "react-markdown",
+            ParsedSymbols(
+                interfaces = mapOf(
+                    "MarkdownComponent" to JsInterface(
+                        members = mapOf(
+                            "render" to listOf(JsMember(kind = "method", returns = "void")),
+                        ),
+                    ),
+                ),
+                variables = mapOf(
+                    "default" to JsVariableInfo(type = "MarkdownComponent"),
+                ),
+            ),
+        )
+        assertEquals("MarkdownComponent", index.resolveNpmExportType("react-markdown", "default"))
+        index.loadNpmPackage(
+            "other",
+            ParsedSymbols(
+                functions = mapOf(
+                    "factory" to listOf(JsMember(kind = "method", returns = "MarkdownComponent")),
+                ),
+            ),
+        )
+        assertEquals("MarkdownComponent", index.resolveNpmExportType("other", "factory"))
+    }
+
+    @Test
+    fun inheritedMembersResolveFromBaseInterfaces() {
+        val index = JsSymbolIndex()
+        index.load(
+            ParsedSymbols(
+                interfaces = mapOf(
+                    "AbstractRange" to JsInterface(
+                        members = mapOf(
+                            "startContainer" to listOf(JsMember(kind = "property", type = "Node")),
+                        ),
+                    ),
+                    "Range" to JsInterface(
+                        extends = listOf("AbstractRange"),
+                        members = mapOf(
+                            "cloneContents" to listOf(JsMember(kind = "method", returns = "DocumentFragment")),
+                        ),
+                    ),
+                    "Node" to JsInterface(members = emptyMap()),
+                    "DocumentFragment" to JsInterface(members = emptyMap()),
+                ),
+                variables = mapOf("range" to JsVariableInfo(type = "Range")),
+            ),
+        )
+
+        val inherited = index.resolveMember("Range", "startContainer")
+        assertNotNull(inherited)
+        assertEquals("AbstractRange", inherited!!.declaringType)
+        assertEquals("Node", inherited.first?.type)
+        assertEquals("Node", index.resolveJsChainType(listOf("range", "startContainer")))
+        assertTrue(index.hasMemberName("startContainer"))
+    }
 }

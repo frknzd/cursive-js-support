@@ -24,12 +24,12 @@ class JsInteropCompletionPrefixesCollapseTest {
     }
 
     @Test
-    fun suppressOnlyWhenSlashAfterGlobal() {
-        assertTrue(
-            JsInteropCompletionPrefixes.shouldSuppressAutoPopupAfterInvalidJsSlash("(js/document/"),
-        )
-        assertFalse(
-            JsInteropCompletionPrefixes.shouldSuppressAutoPopupAfterInvalidJsSlash("(js/"),
-        )
+    fun suppressInvalidJsSlashFromSliceCaretAfterSlash() {
+        assertTrue(JsInteropCompletionPrefixes.shouldSuppressInvalidJsSlashFromEditorSlice("(js/document/"))
+    }
+
+    @Test
+    fun suppressInvalidJsSlashFromSliceFalseForPlainJsSlash() {
+        assertFalse(JsInteropCompletionPrefixes.shouldSuppressInvalidJsSlashFromEditorSlice("(js/"))
     }
 }

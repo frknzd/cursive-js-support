@@ -26,9 +26,8 @@ class JsInteropCompletionAutoPopupTypedHandler : TypedHandlerDelegate() {
             '/' -> {
                 val doc = editor.document
                 val offset = min(editor.caretModel.offset, doc.textLength)
-                val start = max(0, offset - 500)
-                val slice = doc.getText(TextRange(start, offset))
-                if (JsInteropCompletionPrefixes.shouldSuppressAutoPopupAfterInvalidJsSlash(slice)) {
+                InteropCompletionIntentStore.remember(editor, '/', offset)
+                if (InteropCompletionIntentParser.shouldSuppressInvalidSlash(doc.charsSequence, offset, '/')) {
                     InteropDebugLog.debug(
                         "[interop-completion] typedHandler.checkAutoPopup: skip schedule for invalid js/.../ (file=${file.name} caret=$offset)",
                     )
@@ -38,15 +37,16 @@ class JsInteropCompletionAutoPopupTypedHandler : TypedHandlerDelegate() {
                 InteropDebugLog.info(
                     "[interop-completion] typedHandler.checkAutoPopup file=${file.name} char='/' caret=$offset",
                 )
-                scheduleJsInteropAutoPopup(project, editor)
+                scheduleJsInteropAutoPopup(project, editor, '/')
                 return Result.CONTINUE
             }
             '.' -> {
                 InteropLogView.noteProject(project)
+                InteropCompletionIntentStore.remember(editor, '.', editor.caretModel.offset)
                 InteropDebugLog.info(
                     "[interop-completion] typedHandler.checkAutoPopup file=${file.name} char='.' caret=${editor.caretModel.offset}",
                 )
-                scheduleJsInteropAutoPopup(project, editor)
+                scheduleJsInteropAutoPopup(project, editor, '.')
                 return Result.CONTINUE
             }
             '(' -> {
@@ -91,7 +91,7 @@ class JsInteropCompletionAutoPopupTypedHandler : TypedHandlerDelegate() {
         return Result.CONTINUE
     }
 
-    private fun scheduleJsInteropAutoPopup(project: Project, editor: Editor) {
+    private fun scheduleJsInteropAutoPopup(project: Project, editor: Editor, typedChar: Char? = null) {
         val ed = editor
         AutoPopupController.getInstance(project).scheduleAutoPopup(
             ed,
@@ -99,9 +99,13 @@ class JsInteropCompletionAutoPopupTypedHandler : TypedHandlerDelegate() {
                 val doc = ed.document
                 val offset = min(ed.caretModel.offset, doc.textLength)
                 if (offset < 0) return@Condition false
+                if (typedChar == '/' && InteropCompletionIntentParser.shouldSuppressInvalidSlash(doc.charsSequence, offset, typedChar)) {
+                    return@Condition false
+                }
                 val start = max(0, offset - 400)
                 val slice = doc.getText(TextRange(start, offset))
-                if (slice.contains("js/") || slice.contains("(js/")) return@Condition true
+                if (typedChar == '.' && slice.lastIndexOf("js/") >= 0) return@Condition true
+                if (typedChar != '/' && (slice.contains("js/") || slice.contains("(js/"))) return@Condition true
                 val probe = offset.coerceAtMost(committed.textLength).let { if (it > 0) it - 1 else 0 }
                 val el = committed.findElementAt(probe) ?: return@Condition false
                 JsInteropPsi.enclosingEditorSymbol(el)?.namespace == "js"
