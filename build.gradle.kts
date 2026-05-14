@@ -6,6 +6,14 @@ plugins {
     id("org.jetbrains.intellij.platform")
 }
 
+// Cursive is bundled as a compile-time dependency plugin; headless `buildSearchableOptions` walks
+// all settings UIs and instantiates Cursive's code-style panel, which requires Clojure on the
+// classpath — that classpath is incomplete in this Gradle fork, so the task crashes. This
+// plugin does not contribute searchable Settings entries; disabling is safe and unblocks ZIP builds.
+intellijPlatform {
+    buildSearchableOptions = false
+}
+
 group = "com.cursivejssupport"
 version = "0.1.0-SNAPSHOT"
 
