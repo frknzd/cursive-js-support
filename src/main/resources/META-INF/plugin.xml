@@ -1,0 +1,65 @@
+<idea-plugin>
+    <id>com.cursivejssupport</id>
+    <name>Cursive JS Support</name>
+    <vendor url="https://github.com/frknzdmr">Furkan Ozdemir</vendor>
+
+    <description><![CDATA[
+        Adds JavaScript/browser API awareness to ClojureScript editing in Cursive.
+        Removes false-positive squiggly lines on <code>js/</code> globals and browser
+        interop forms by loading TypeScript's <code>lib.dom.d.ts</code> declarations.
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.cursiveclojure.cursive</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <applicationService
+                serviceImplementation="com.cursivejssupport.settings.JsSupportSettings"/>
+        <projectService
+                serviceImplementation="com.cursivejssupport.npm.JsNpmDependencyWatcher"/>
+
+        <applicationConfigurable
+                parentId="tools"
+                instance="com.cursivejssupport.settings.JsSupportConfigurable"
+                id="com.cursivejssupport.settings"
+                displayName="Cursive JS Support"/>
+
+        <notificationGroup id="Cursive JS Support" displayType="BALLOON" isLogByDefault="true"/>
+        <postStartupActivity
+                implementation="com.cursivejssupport.plugin.JsSupportPlugin"/>
+
+        <daemon.highlightInfoFilter
+                implementation="com.cursivejssupport.annotator.JsInteropHighlightFilter"/>
+
+        <completion.contributor
+                language="Clojure"
+                implementationClass="com.cursivejssupport.completion.ClojureScriptCompletionContributor"/>
+        <completion.contributor
+                language="ClojureScript"
+                implementationClass="com.cursivejssupport.completion.ClojureScriptCompletionContributor"/>
+
+        <lang.documentationProvider
+                language="Clojure"
+                implementationClass="com.cursivejssupport.completion.ClojureScriptDocumentationProvider"/>
+        <lang.documentationProvider
+                language="ClojureScript"
+                implementationClass="com.cursivejssupport.completion.ClojureScriptDocumentationProvider"/>
+
+        <psi.referenceContributor
+                language="Clojure"
+                implementation="com.cursivejssupport.reference.JsSymbolReferenceContributor"/>
+        <psi.referenceContributor
+                language="ClojureScript"
+                implementation="com.cursivejssupport.reference.JsSymbolReferenceContributor"/>
+
+        <gotoDeclarationHandler
+                order="first"
+                language="Clojure"
+                implementation="com.cursivejssupport.reference.JsInteropGotoDeclarationHandler"/>
+        <gotoDeclarationHandler
+                order="first"
+                language="ClojureScript"
+                implementation="com.cursivejssupport.reference.JsInteropGotoDeclarationHandler"/>
+
+    </extensions>
+</idea-plugin>
