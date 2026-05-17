@@ -84,9 +84,14 @@ object JsInteropNavigation {
         sourceElement: PsiElement,
         project: Project,
     ): Array<PsiElement>? {
-        val text = JsInteropPsi.gotoSymbolText(sourceElement)
+        var text = JsInteropPsi.gotoSymbolText(sourceElement)
         if (text.isBlank() || text.startsWith("\"") || text.startsWith("(") || text.startsWith("[")) {
             return null
+        }
+
+        // Support constructor calls: (Fuse. ...)
+        if (text.endsWith(".") && text.length > 1 && !text.startsWith(".")) {
+            text = text.removeSuffix(".")
         }
 
         val file = sourceElement.containingFile ?: return null
@@ -102,8 +107,16 @@ object JsInteropNavigation {
             if (exportName != null && exportName != namespace) {
                 resolveNpmAliasExportOrMemberTargets(project, index, packageName, exportName)?.let { return it }
             } else {
-                index.getNpmExportPsiElements(project, packageName, "default")?.let { return it }
-                firstPsiFromPackageTypingsEntry(project, packageName, anchorPath)?.let { return arrayOf(it) }
+                val targets = mutableListOf<PsiElement>()
+                
+                // Prioritize external library target
+                index.getNpmExportPsiElements(project, packageName, "default")?.let { targets.addAll(it) }
+                firstPsiFromPackageTypingsEntry(project, packageName, anchorPath)?.let { targets.add(it) }
+                
+                // Include the local alias declaration as a secondary target
+                NsAliasResolver.resolveAliasDeclaration(file, namespace)?.let { targets.add(it) }
+
+                if (targets.isNotEmpty()) return targets.toTypedArray()
             }
         }
 
@@ -187,7 +200,24 @@ object JsInteropNavigation {
     ): Array<PsiElement>? {
         val exportKey = exportTail.substringBefore('.').substringBefore('/').trim()
         if (exportKey.isEmpty()) return null
+        
         if (!index.isKnownNpmExport(packageName, exportKey)) {
+            // Check if it's a member of the default export (common in libraries using export =)
+            val defaultType = index.resolveNpmExportType(packageName, "default")
+            if (defaultType != null) {
+                val targets = index.getMemberPsiElements(project, defaultType, exportKey)
+                if (targets != null) {
+                    val remainder = exportTail.removePrefix(exportKey).trimStart('.').trim()
+                    if (remainder.isEmpty()) return targets
+                    
+                    // Recurse for nested members if needed
+                    val baseType = index.resolveMember(defaultType, exportKey)?.first?.let {
+                        if (it.kind == "method") it.returns else it.type
+                    } ?: return targets
+                    return resolveNestedMemberTargets(project, index, baseType, remainder)
+                }
+            }
+
             if (index.isKnownNpmExport(packageName, exportTail)) {
                 return index.getNpmExportPsiElements(project, packageName, exportTail)
             }
@@ -203,12 +233,20 @@ object JsInteropNavigation {
             return index.getNpmExportPsiElements(project, packageName, exportKey)
         }
         val baseType = index.resolveNpmExportType(packageName, exportKey) ?: return null
+        return resolveNestedMemberTargets(project, index, baseType, remainder)
+    }
+
+    private fun resolveNestedMemberTargets(
+        project: Project,
+        index: JsSymbolIndex,
+        baseType: String,
+        remainder: String,
+    ): Array<PsiElement>? {
         val memberSegs = remainder.split('.')
             .map { it.substringBefore('/').trim() }
             .filter { it.isNotEmpty() }
-        if (memberSegs.isEmpty()) {
-            return index.getNpmExportPsiElements(project, packageName, exportKey)
-        }
+        if (memberSegs.isEmpty()) return null
+        
         var receiverType = baseType
         for (seg in memberSegs.dropLast(1)) {
             val m = index.resolveMember(receiverType, seg)?.first ?: return null
@@ -218,7 +256,14 @@ object JsInteropNavigation {
     }
 
     fun resolveClSymbol(symbol: PsiElement, project: Project): PsiElement? {
-        val (text, namespace, name) = interopSymbolTextNamespaceName(symbol) ?: return null
+        val (rawText, rawNamespace, rawName) = interopSymbolTextNamespaceName(symbol) ?: return null
+        
+        // Handle constructor call: (Fuse. ...)
+        val isConstructor = rawText.endsWith(".") && rawText.length > 1 && !rawText.startsWith(".")
+        val text = if (isConstructor) rawText.removeSuffix(".") else rawText
+        val name = if (isConstructor && rawName != null) rawName.removeSuffix(".") else rawName
+        val namespace = rawNamespace
+        
         val index = JsSymbolIndex.getInstance()
 
         return when {

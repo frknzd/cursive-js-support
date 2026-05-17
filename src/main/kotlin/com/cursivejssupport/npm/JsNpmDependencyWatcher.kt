@@ -47,6 +47,10 @@ class JsNpmDependencyWatcher(private val project: Project) : Disposable {
         alarm.cancelAllRequests()
         alarm.addRequest({
             if (project.isDisposed) return@addRequest
+            
+            // Clear discovery cache
+            project.service<NpmPackageResolver>().clearCache()
+
             AppExecutorUtil.getAppExecutorService().execute {
                 try {
                     JsIndexLoader.loadNpmPackages(project, JsSymbolIndex.getInstance())

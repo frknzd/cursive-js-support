@@ -128,9 +128,12 @@ class InteropContextDetectorTest {
     }
 
     @Test
-    fun `unknown namespace is not an alias`() {
+    fun `unknown namespace is parsed as JsChainMember`() {
         val ctx = detect("(my.ns/foo")
-        assertEquals(InteropCompletionContext.None, ctx)
+        assertTrue(ctx is InteropCompletionContext.JsChainMember)
+        ctx as InteropCompletionContext.JsChainMember
+        assertEquals(listOf("my.ns"), ctx.receiverSegments)
+        assertEquals("foo", ctx.prefix)
     }
 
     @Test

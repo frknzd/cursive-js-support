@@ -157,10 +157,21 @@ class JsSymbolIndex {
 
     fun getNpmExportPsiElements(project: Project, packageName: String, exportName: String): Array<PsiElement>? {
         val exportsMap = npmExports[packageName] ?: return null
-        if (!exportsMap.containsKey(exportName)) return null
-        val location = exportsMap[exportName] ?: return null
-        val resolved = resolveLocation(project, location) ?: return null
-        return arrayOf(resolved)
+        
+        if (exportsMap.containsKey(exportName)) {
+            val location = exportsMap[exportName] ?: return null
+            val resolved = resolveLocation(project, location) ?: return null
+            return arrayOf(resolved)
+        }
+
+        // Fallback: If not an explicit export, it might be a global/class defined in the package's typings
+        // (common with 'export as namespace' or simple top-level declarations)
+        val locations = mutableListOf<JsLocation>()
+        globals[exportName]?.location?.let { locations.add(it) }
+        functions[exportName]?.forEach { it.location?.let { loc -> locations.add(loc) } }
+        
+        val elements = locations.mapNotNull { resolveLocation(project, it) }
+        return if (elements.isNotEmpty()) elements.toTypedArray() else null
     }
 
     fun getAnyMemberPsiElements(project: Project, memberName: String, preferredReceiverType: String? = null): Array<PsiElement>? {

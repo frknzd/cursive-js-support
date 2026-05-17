@@ -44,7 +44,8 @@ class JsInteropHighlightFilter : HighlightInfoFilter {
             return !shouldSuppressTypoForInterop(file, document, start, end)
         }
 
-        val text = document.getText(TextRange(start, end))
+        val rawText = document.getText(TextRange(start, end))
+        val text = if (rawText.endsWith(".") && rawText.length > 1 && !rawText.startsWith(".")) rawText.removeSuffix(".") else rawText
 
         val index = JsSymbolIndex.getInstance()
         val aliases = NsAliasResolver.resolveAliases(file)
@@ -166,7 +167,8 @@ class JsInteropHighlightFilter : HighlightInfoFilter {
     ): Boolean {
         val element = file.findElementAt(start) ?: return false
         val symbol = PsiTreeUtil.getParentOfType(element, ClEditorSymbol::class.java, false)
-        val text = document.getText(TextRange(start, end))
+        val rawText = document.getText(TextRange(start, end))
+        val text = if (rawText.endsWith(".") && rawText.length > 1 && !rawText.startsWith(".")) rawText.removeSuffix(".") else rawText
 
         // 1. Bare base namespaces.
         if (text == "js" || text == "cljs" || text == "shadow") return true

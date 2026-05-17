@@ -123,4 +123,63 @@ class DtsParserTest {
             assertTrue(symbols3.variables.containsKey("b"))
         }
     }
+
+    @Test
+    fun parsesClassesAndStatics() {
+        val nodeExecutable = DtsParser.findNodeExecutable()
+        assumeNotNull(nodeExecutable)
+
+        DtsParser(nodeExecutable!!).use { parser ->
+            val dtsContent = """
+                declare class Fuse<T> {
+                  public constructor(list: T[]);
+                  public search(pattern: string): T[];
+                  public static version: string;
+                  public static createIndex<U>(list: U[]): any;
+                }
+                export { Fuse as default };
+            """.trimIndent()
+
+            val symbols = parser.parse(mapOf("fuse.d.ts" to dtsContent))
+
+            // Instance interface
+            assertTrue(symbols.interfaces.containsKey("Fuse"))
+            val instanceMembers = symbols.interfaces["Fuse"]!!.members
+            assertTrue(instanceMembers.containsKey("search"))
+            
+            // Static interface
+            assertTrue(symbols.interfaces.containsKey("TYPE${'$'}Fuse${'$'}Static"))
+            val staticMembers = symbols.interfaces["TYPE${'$'}Fuse${'$'}Static"]!!.members
+            assertTrue(staticMembers.containsKey("new"))
+            assertTrue(staticMembers.containsKey("version"))
+            assertTrue(staticMembers.containsKey("createIndex"))
+            
+            // Global variable for the class points to static type
+            assertEquals("TYPE${'$'}Fuse${'$'}Static", symbols.variables["Fuse"]?.type)
+            
+            // Default export points to static type (because Fuse was resolved to static type)
+            assertEquals("TYPE${'$'}Fuse${'$'}Static", symbols.variables["default"]?.type)
+        }
+    }
+
+    @Test
+    fun parsesExportEquals() {
+        val nodeExecutable = DtsParser.findNodeExecutable()
+        assumeNotNull(nodeExecutable)
+
+        DtsParser(nodeExecutable!!).use { parser ->
+            val dtsContent = """
+                declare namespace ReactDOM {
+                  function render(element: any, container: any): void;
+                }
+                export = ReactDOM;
+            """.trimIndent()
+
+            val symbols = parser.parse(mapOf("react-dom.d.ts" to dtsContent))
+            
+            assertTrue(symbols.interfaces.containsKey("NAMESPACE${'$'}ReactDOM"))
+            assertEquals("NAMESPACE${'$'}ReactDOM", symbols.variables["ReactDOM"]?.type)
+            assertEquals("NAMESPACE${'$'}ReactDOM", symbols.variables["default"]?.type)
+        }
+    }
 }

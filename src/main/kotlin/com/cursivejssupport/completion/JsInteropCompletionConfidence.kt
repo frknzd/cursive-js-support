@@ -1,5 +1,6 @@
 package com.cursivejssupport.completion
 
+import com.cursivejssupport.npm.NsAliasResolver
 import com.cursivejssupport.util.JsInteropPsi
 import com.intellij.codeInsight.completion.CompletionConfidence
 import com.intellij.openapi.util.TextRange
@@ -24,6 +25,7 @@ import kotlin.math.min
  */
 class JsInteropCompletionConfidence : CompletionConfidence() {
 
+    @Deprecated("Deprecated in Java")
     override fun shouldSkipAutopopup(
         contextElement: PsiElement,
         psiFile: PsiFile,
@@ -33,6 +35,17 @@ class JsInteropCompletionConfidence : CompletionConfidence() {
 
         val doc = psiFile.viewProvider.document ?: return ThreeState.UNSURE
         val end = min(offset, doc.textLength).coerceAtLeast(0)
+        
+        // Use our context detector to decide. If we identify an interop context,
+        // we definitely want the popup (ThreeState.NO means "do not skip").
+        val aliases = NsAliasResolver.resolveAliases(psiFile)
+        val ctx = InteropContextDetector.detect(doc.charsSequence, end, aliases)
+        if (ctx !is InteropCompletionContext.None) {
+            // Special handling for require package strings: always allow autopopup
+            if (ctx is InteropCompletionContext.NsRequirePackage) return ThreeState.NO
+            return ThreeState.NO
+        }
+
         if (end == 0) return ThreeState.UNSURE
         val start = max(0, end - SLICE_LOOKBACK)
         val slice = doc.getText(TextRange(start, end))

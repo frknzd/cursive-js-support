@@ -1,6 +1,7 @@
 package com.cursivejssupport.completion
 
 import com.cursivejssupport.index.JsSymbolIndex
+import com.cursivejssupport.npm.IntellijNpmResolutionService
 import com.cursivejssupport.npm.NpmPackageResolver
 import com.cursivejssupport.npm.NsAliasResolver
 import com.intellij.codeInsight.completion.CompletionContributor
@@ -9,6 +10,8 @@ import com.intellij.codeInsight.completion.CompletionProvider
 import com.intellij.codeInsight.completion.CompletionResultSet
 import com.intellij.codeInsight.completion.CompletionType
 import com.intellij.codeInsight.completion.PlainPrefixMatcher
+import com.intellij.openapi.components.service
+import com.intellij.openapi.components.serviceOrNull
 import com.intellij.patterns.PlatformPatterns
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
@@ -56,15 +59,24 @@ class InteropCompletionContributor : CompletionContributor() {
             if (context is InteropCompletionContext.None) return
 
             val index = JsSymbolIndex.getInstance()
-            val result = baseResult.withPrefixMatcher(PlainPrefixMatcher(context.prefix, /*caseSensitive=*/false))
+            
+            // Set prefix matcher. If prefix is empty, we still want to match everything.
+            val matcher = PlainPrefixMatcher(context.prefix, /*caseSensitive=*/false)
+            val result = baseResult.withPrefixMatcher(matcher)
 
             when (context) {
-                is InteropCompletionContext.NsRequirePackage -> emitNpmPackages(context, file, parameters, result)
+                is InteropCompletionContext.NsRequirePackage -> {
+                    // For empty package strings, ensure we restart completion as the user types
+                    if (context.prefix.isEmpty()) {
+                        result.restartCompletionOnAnyPrefixChange()
+                    }
+                    emitNpmPackages(context, file, parameters, result)
+                }
                 is InteropCompletionContext.DotMember -> {
                     val list = enclosingClList(parameters.position)
-                    InteropCompletionItems.emit(context, index, result, list)
+                    InteropCompletionItems.emit(context, file, index, result, list)
                 }
-                else -> InteropCompletionItems.emit(context, index, result, null)
+                else -> InteropCompletionItems.emit(context, file, index, result, null)
             }
         }
 
@@ -76,8 +88,20 @@ class InteropCompletionContributor : CompletionContributor() {
         ) {
             val project = file.project
             val anchor = file.virtualFile?.path
-            val packages = NpmPackageResolver(project).discoverAllDependencyPackageNames(anchor)
-            InteropCompletionItems.emitNpmPackages(packages, result)
+            
+            val resolver = project.service<NpmPackageResolver>()
+            val manualPackages = resolver.discoverAllDependencyPackageNames(anchor)
+            val service = project.serviceOrNull<IntellijNpmResolutionService>()
+            val intellijPackages = service?.discoverPackages(file) ?: emptySet()
+            
+            val combined = mutableSetOf<String>()
+            combined.addAll(manualPackages)
+            combined.addAll(intellijPackages)
+
+            if (context.prefix.isEmpty()) {
+                result.restartCompletionOnAnyPrefixChange()
+            }
+            InteropCompletionItems.emitNpmPackages(combined, result)
         }
 
         private fun enclosingClList(element: PsiElement?): ClList? {

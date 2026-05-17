@@ -3,35 +3,50 @@ package com.cursivejssupport.npm
 import com.cursivejssupport.settings.JsSupportSettings
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
+import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.project.Project
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 
 data class ResolvedNpmPackage(
     val packageName: String,
     val files: Map<String, String>  // absolute file path → .d.ts content
 )
 
+@Service(Service.Level.PROJECT)
 class NpmPackageResolver(
-    private val projectDir: File,
-    private val settings: JsSupportSettings.State,
+    private val project: Project?,
 ) {
+    private var testProjectDir: File? = null
+    private var testSettings: JsSupportSettings.State? = null
 
+    private val projectDir: File get() = testProjectDir ?: File(project?.basePath ?: "")
+    private val settings: JsSupportSettings.State get() = testSettings ?: JsSupportSettings.getInstance().state
     private val log = logger<NpmPackageResolver>()
     private val mapper = jacksonObjectMapper()
-    private val nodeModules = File(projectDir, "node_modules")
+    private val nodeModules get() = File(projectDir, "node_modules")
 
-    constructor(
-        project: Project,
-        settings: JsSupportSettings.State = JsSupportSettings.getInstance().state,
-    ) : this(File(project.basePath ?: ""), settings)
+    constructor(projectDir: File, settings: JsSupportSettings.State) : this(null) {
+        this.testProjectDir = projectDir
+        this.testSettings = settings
+    }
+
+    private val packageDiscoveryCache = ConcurrentHashMap<String, Set<String>>()
 
     fun resolveAll(): List<ResolvedNpmPackage> {
-        if (!nodeModules.exists()) return emptyList()
+        val roots = candidateNpmDiscoveryRoots(null)
+        val allNames = mutableSetOf<String>()
+        for (root in roots) {
+            allNames += discoverAllDependencyPackageNames(root.absolutePath)
+        }
 
-        return discoverAllDependencyPackageNames(anchorFilePath = null)
-            .mapNotNull { resolve(it) }
-            .also { log.info("Cursive JS Support: resolved types for ${it.size} npm packages") }
+        return allNames.mapNotNull { name ->
+            // Try to resolve the package by walking up from each discovery root
+            roots.asSequence()
+                .mapNotNull { root -> resolve(name, root.absolutePath) }
+                .firstOrNull()
+        }.also { log.info("Cursive JS Support: resolved types for ${it.size} npm packages") }
     }
 
     /**
@@ -40,6 +55,11 @@ class NpmPackageResolver(
      * every directory up the chain from [anchorFilePath] that contains any of those files (nested CLJS apps).
      */
     fun discoverAllDependencyPackageNames(anchorFilePath: String? = null): Set<String> {
+        val cacheKey = anchorFilePath ?: "PROJECT_ROOT"
+        // Invalidate cache if too old or just return cached
+        // For now, let's just return if present
+        packageDiscoveryCache[cacheKey]?.let { return it }
+
         val names = mutableSetOf<String>()
         val roots = candidateNpmDiscoveryRoots(anchorFilePath)
         for (root in roots) {
@@ -51,13 +71,53 @@ class NpmPackageResolver(
             if (settings.scanLockfileTransitive) {
                 File(root, "package-lock.json").takeIf { it.exists() }?.let { names += parsePackageLockJson(it) }
             }
+            
+            // Also include anything physically present in node_modules as a fallback
+            val nm = File(root, "node_modules")
+            if (nm.isDirectory) {
+                names += listInstalledPackages(nm)
+            }
         }
-        return names.filter { !it.startsWith("@types/") }.toSet()
+        
+        // Include packages from IDE internal cache
+        System.getProperty("idea.system.path")?.let { systemDir ->
+            val cache = File(systemDir, "javascript/typings")
+            if (cache.isDirectory) {
+                cache.listFiles()?.filter { it.isDirectory && !it.name.startsWith(".") }?.forEach { 
+                    names += it.name 
+                }
+            }
+        }
+
+        val result = names.filter { !it.startsWith("@types/") }.toSet()
+        packageDiscoveryCache[cacheKey] = result
+        return result
+    }
+
+    fun clearCache() {
+        packageDiscoveryCache.clear()
+    }
+
+    private fun listInstalledPackages(nodeModulesDir: File): Set<String> {
+        val out = mutableSetOf<String>()
+        nodeModulesDir.listFiles()?.forEach { f ->
+            if (f.isDirectory) {
+                if (f.name.startsWith("@")) {
+                    f.listFiles()?.forEach { sub ->
+                        if (sub.isDirectory) out += "${f.name}/${sub.name}"
+                    }
+                } else if (f.name != ".bin") {
+                    out += f.name
+                }
+            }
+        }
+        return out
     }
 
     private fun npmSignalsPresent(dir: File): Boolean =
         File(dir, "package.json").isFile ||
             File(dir, "shadow-cljs.edn").isFile ||
+            File(dir, "node_modules").isDirectory ||
             (settings.scanLockfileTransitive && File(dir, "package-lock.json").isFile)
 
     private fun candidateNpmDiscoveryRoots(anchorFilePath: String?): List<File> {
@@ -70,8 +130,16 @@ class NpmPackageResolver(
                 d = d.parentFile
             }
         }
+        
+        // Also look for workspace roots/monorepos from the project dir
         if (projectDir.isDirectory) {
             seen.add(projectDir)
+            // Depth 2 search for nested package.json files (common in monorepos)
+            projectDir.listFiles()?.forEach { sub ->
+                if (sub.isDirectory && !sub.name.startsWith(".") && sub.name != "node_modules") {
+                    if (npmSignalsPresent(sub)) seen.add(sub)
+                }
+            }
         }
         return seen.toList()
     }
@@ -127,8 +195,8 @@ class NpmPackageResolver(
         packageDirUnder(nodeModules, packageName)
 
     /**
-     * `node_modules` directories to search: walk up from a source file (workspace / nested installs),
-     * then the project root's `node_modules`.
+     * `node_modules` directories and IDE cache to search: walk up from a source file (workspace / nested installs),
+     * then the project root's `node_modules`, then the IDE's internal typing cache.
      */
     private fun candidateNodeModulesDirs(anchorFilePath: String?): List<File> {
         val seen = LinkedHashSet<File>()
@@ -142,11 +210,36 @@ class NpmPackageResolver(
             }
         }
         if (nodeModules.isDirectory) seen.add(nodeModules)
+        
+        // IDE internal cache (system/javascript/typings)
+        val systemDir = System.getProperty("idea.system.path")
+        if (systemDir != null) {
+            val cache = File(systemDir, "javascript/typings")
+            if (cache.isDirectory) seen.add(cache)
+        }
+
         return seen.toList()
     }
 
-    private fun atTypesDirUnder(nodeModulesRoot: File, packageName: String): File =
-        File(nodeModulesRoot, "@types/${packageName.replace("/", "__")}")
+    private fun atTypesDirUnder(nodeModulesRoot: File, packageName: String): File {
+        // Handle both standard @types and IntelliJ's cache structure
+        if (nodeModulesRoot.name == "typings") {
+            // IntelliJ cache usually has package/version/node_modules/@types/package
+            val pkgDir = File(nodeModulesRoot, packageName)
+            if (pkgDir.isDirectory) {
+                // Find latest version or first one
+                val latest = pkgDir.listFiles()?.filter { it.isDirectory }?.sortedByDescending { it.name }?.firstOrNull()
+                if (latest != null) {
+                    val atTypes = File(latest, "node_modules/@types/${packageName.replace("/", "__")}")
+                    if (atTypes.isDirectory) return atTypes
+                    // Sometimes it's just index.d.ts directly under version/node_modules/packageName
+                    val direct = File(latest, "node_modules/$packageName")
+                    if (direct.isDirectory) return direct
+                }
+            }
+        }
+        return File(nodeModulesRoot, "@types/${packageName.replace("/", "__")}")
+    }
 
     /**
      * Entry `.d.ts` for the package: `types` / `typings`, conditional `exports`, string `exports` next to `.d.ts`,
@@ -212,23 +305,34 @@ class NpmPackageResolver(
         }
     }
 
-    private fun resolve(packageName: String): ResolvedNpmPackage? {
+    private fun resolve(packageName: String, anchorFilePath: String? = null): ResolvedNpmPackage? {
         val files = mutableMapOf<String, String>()
 
-        val pkgDir = packageDirectory(packageName)
-        if (pkgDir.exists()) {
-            val entryDts = findPackageOwnTypes(pkgDir)
+        var foundPkgDir: File? = null
+        for (nmRoot in candidateNodeModulesDirs(anchorFilePath)) {
+            val d = packageDirUnder(nmRoot, packageName)
+            if (d.isDirectory) {
+                foundPkgDir = d
+                break
+            }
+        }
+
+        if (foundPkgDir != null) {
+            val entryDts = findPackageOwnTypes(foundPkgDir)
             if (entryDts != null) {
-                files.putAll(collectDtsFiles(pkgDir, entryDts))
+                files.putAll(collectDtsFiles(foundPkgDir, entryDts))
             }
         }
 
         if (files.isEmpty()) {
-            val typesDir = File(nodeModules, "@types/${packageName.replace("/", "__")}")
-            if (typesDir.exists()) {
-                val index = File(typesDir, "index.d.ts")
-                if (index.exists()) {
-                    files.putAll(collectDtsFiles(typesDir, "index.d.ts"))
+            for (nmRoot in candidateNodeModulesDirs(anchorFilePath)) {
+                val typesDir = atTypesDirUnder(nmRoot, packageName)
+                if (typesDir.isDirectory) {
+                    val index = File(typesDir, "index.d.ts")
+                    if (index.isFile) {
+                        files.putAll(collectDtsFiles(typesDir, "index.d.ts"))
+                        break
+                    }
                 }
             }
         }

@@ -9,6 +9,7 @@ import com.intellij.codeInsight.lookup.LookupElement
 import com.intellij.codeInsight.lookup.LookupElementBuilder
 import com.intellij.psi.PsiComment
 import com.intellij.psi.PsiElement
+import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiWhiteSpace
 import cursive.psi.api.ClList
 
@@ -23,10 +24,16 @@ import cursive.psi.api.ClList
  * Method elements use a small [InsertionContext]-aware handler that inserts `(` and a closing
  * `)` if the user is in head position and the lookup is a function/method.
  */
+import com.cursivejssupport.npm.IntellijNpmResolutionService
+import com.intellij.openapi.components.service
+import com.intellij.openapi.components.serviceOrNull
+import com.intellij.lang.javascript.psi.JSNamedElement
+
 object InteropCompletionItems {
 
     fun emit(
         context: InteropCompletionContext,
+        file: PsiFile,
         index: JsSymbolIndex,
         result: CompletionResultSet,
         listAroundCaret: PsiElement?,
@@ -37,9 +44,19 @@ object InteropCompletionItems {
         is InteropCompletionContext.DotMember -> emitDotMembers(context, index, result, listAroundCaret)
         is InteropCompletionContext.NsRequirePackage -> 0 // handled by contributor (needs Project)
         is InteropCompletionContext.NsRequireKeyword -> emitRequireKeywords(context, result)
-        is InteropCompletionContext.NsRefer -> emitRefer(context, index, result)
-        is InteropCompletionContext.NpmAliasExport -> emitNpmAliasExports(context, index, result)
-        is InteropCompletionContext.NpmAliasExportMember -> emitNpmAliasExportMembers(context, index, result)
+        is InteropCompletionContext.NsRefer -> emitRefer(context, file, index, result)
+        is InteropCompletionContext.NpmAliasName -> emitNpmAliasNames(context, result)
+        is InteropCompletionContext.NpmAliasExport -> emitNpmAliasExports(context, file, index, result)
+        is InteropCompletionContext.NpmAliasExportMember -> emitNpmAliasExportMembers(context, file, index, result)
+    }
+
+    private fun emitNpmAliasNames(context: InteropCompletionContext.NpmAliasName, result: CompletionResultSet): Int {
+        var n = 0
+        for ((alias, pkg) in context.availableAliases) {
+            result.addElement(npmAliasNameLookup(alias, pkg))
+            n++
+        }
+        return n
     }
 
     /**
@@ -53,6 +70,7 @@ object InteropCompletionItems {
             result.addElement(npmPackageLookup(name))
             n++
         }
+        if (n > 0) result.stopHere()
         return n
     }
 
@@ -143,13 +161,27 @@ object InteropCompletionItems {
 
     private fun emitRefer(
         context: InteropCompletionContext.NsRefer,
+        file: PsiFile,
         index: JsSymbolIndex,
         result: CompletionResultSet,
     ): Int {
+        var n = 0
+        val service = file.project.serviceOrNull<IntellijNpmResolutionService>()
+        if (service != null) {
+            val exports = service.resolveExports(file, context.packageName)
+            if (exports.isNotEmpty()) {
+                for (export in exports) {
+                    val name = (export as? JSNamedElement)?.name ?: continue
+                    result.addElement(npmExportLookup(name, context.packageName))
+                    n++
+                }
+                if (n > 0) return n
+            }
+        }
+
         // Only the package's named exports are valid here. Keyword helpers (`:as`, `:refer`,
         // `:rename`, `:default`) belong outside the `:refer` vector and surface through the
         // NsRequireKeyword slot instead.
-        var n = 0
         for (exportName in index.npmExportNames(context.packageName)) {
             result.addElement(npmExportLookup(exportName, context.packageName))
             n++
@@ -159,11 +191,25 @@ object InteropCompletionItems {
 
     private fun emitNpmAliasExports(
         context: InteropCompletionContext.NpmAliasExport,
+        file: PsiFile,
         index: JsSymbolIndex,
         result: CompletionResultSet,
     ): Int {
-        if (!index.isLoaded) return 0
         var n = 0
+        val service = file.project.serviceOrNull<IntellijNpmResolutionService>()
+        if (service != null) {
+            val exports = service.resolveExports(file, context.packageName)
+            if (exports.isNotEmpty()) {
+                for (export in exports) {
+                    val name = (export as? JSNamedElement)?.name ?: continue
+                    result.addElement(npmExportLookup(name, context.packageName))
+                    n++
+                }
+                if (n > 0) return n
+            }
+        }
+
+        if (!index.isLoaded) return 0
         for (exportName in index.npmExportNames(context.packageName)) {
             result.addElement(npmExportLookup(exportName, context.packageName))
             n++
@@ -173,9 +219,21 @@ object InteropCompletionItems {
 
     private fun emitNpmAliasExportMembers(
         context: InteropCompletionContext.NpmAliasExportMember,
+        file: PsiFile,
         index: JsSymbolIndex,
         result: CompletionResultSet,
     ): Int {
+        var n = 0
+        val service = file.project.serviceOrNull<IntellijNpmResolutionService>()
+        if (service != null) {
+            val exports = service.resolveExports(file, context.packageName)
+            if (exports.isNotEmpty()) {
+                // Here we would ideally evaluate the JSType of the specific export and its members.
+                // For now, if IntelliJ resolves it, we can fallback to the index if we don't have JS type eval here,
+                // or just skip because we only have PsiElement for the exports, not their deeply nested types.
+            }
+        }
+
         if (!index.isLoaded) return 0
         var receiverType = index.resolveNpmExportType(context.packageName, context.exportName) ?: return 0
         for (segment in context.receiverSegments) {
@@ -236,6 +294,12 @@ object InteropCompletionItems {
         LookupElementBuilder.create(packageName)
             .withPresentableText(packageName)
             .withTypeText("npm")
+            .withIcon(JsInteropCompletionIcons.forNpmNamespaceAlias())
+
+    private fun npmAliasNameLookup(alias: String, packageName: String): LookupElement =
+        LookupElementBuilder.create(alias)
+            .withPresentableText(alias)
+            .withTypeText(packageName)
             .withIcon(JsInteropCompletionIcons.forNpmNamespaceAlias())
 
     private fun keywordLookup(keyword: String): LookupElement =

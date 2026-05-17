@@ -96,4 +96,11 @@ sealed interface InteropCompletionContext {
         override val prefix: String,
         override val replacementStart: Int,
     ) : InteropCompletionContext
+
+    /** `<prefix>` — suggest npm aliases themselves. */
+    data class NpmAliasName(
+        val availableAliases: Map<String, String>,
+        override val prefix: String,
+        override val replacementStart: Int,
+    ) : InteropCompletionContext
 }

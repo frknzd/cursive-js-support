@@ -30,4 +30,44 @@ class NpmPackageResolverDiscoverWalkTest {
             repo.deleteRecursively()
         }
     }
+
+    @Test
+    fun `discovers nested package-json in monorepo immediate subdirectories`() {
+        val repo = Files.createTempDirectory("mono-disc").toFile()
+        try {
+            val projectRoot = File(repo, "project").apply { mkdirs() }
+            val app1 = File(projectRoot, "app1").apply { mkdirs() }
+            File(app1, "package.json").writeText("""{"dependencies": {"lodash": "1.0.0"}}""")
+            
+            val app2 = File(projectRoot, "app2").apply { mkdirs() }
+            File(app2, "package.json").writeText("""{"dependencies": {"axios": "1.0.0"}}""")
+
+            val resolver = NpmPackageResolver(projectRoot, JsSupportSettings.State())
+            val names = resolver.discoverAllDependencyPackageNames(null)
+            
+            assertTrue("Should find lodash from app1", names.contains("lodash"))
+            assertTrue("Should find axios from app2", names.contains("axios"))
+        } finally {
+            repo.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `discovers packages physically present in node_modules even if not in package-json`() {
+        val repo = Files.createTempDirectory("nm-fallback").toFile()
+        try {
+            val root = File(repo, "project").apply { mkdirs() }
+            val nm = File(root, "node_modules").apply { mkdirs() }
+            File(nm, "react").apply { mkdirs() }
+            File(nm, "@mui/material").apply { mkdirs() }
+            
+            val resolver = NpmPackageResolver(root, JsSupportSettings.State())
+            val names = resolver.discoverAllDependencyPackageNames(null)
+            
+            assertTrue("Should find react from node_modules", names.contains("react"))
+            assertTrue("Should find @mui/material from node_modules", names.contains("@mui/material"))
+        } finally {
+            repo.deleteRecursively()
+        }
+    }
 }

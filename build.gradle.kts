@@ -29,6 +29,7 @@ dependencies {
         local("/Applications/IntelliJ IDEA.app")
         testFramework(TestFrameworkType.Platform)
         plugin("com.cursiveclojure.cursive", "2026.1-261")
+        bundledPlugin("JavaScript")
     }
 }
 

@@ -32,9 +32,21 @@ object InteropContextDetector {
 
         // 2. Otherwise look at the identifier-like token immediately to the left of the caret.
         val tokenStart = scanTokenStart(doc, caret)
-        if (tokenStart == caret) return InteropCompletionContext.None
+        if (tokenStart == caret) {
+            return if (aliases.isNotEmpty()) {
+                InteropCompletionContext.NpmAliasName(aliases, "", caret)
+            } else {
+                InteropCompletionContext.None
+            }
+        }
         val token = doc.subSequence(tokenStart, caret).toString().stripCompletionDummy()
-        if (token.isEmpty()) return InteropCompletionContext.None
+        if (token.isEmpty()) {
+            return if (aliases.isNotEmpty()) {
+                InteropCompletionContext.NpmAliasName(aliases, "", caret)
+            } else {
+                InteropCompletionContext.None
+            }
+        }
 
         return classifyToken(token, tokenStart, aliases)
     }
@@ -94,17 +106,51 @@ object InteropContextDetector {
             return classifyJsToken(token, tokenStart)
         }
 
-        // Alias/... (npm alias)
         val slashIdx = token.indexOf('/')
         if (slashIdx > 0) {
             val ns = token.substring(0, slashIdx)
             val pkg = aliases[ns]
-            if (pkg != null) {
-                return classifyNpmAliasToken(ns, pkg, token, slashIdx, tokenStart)
+            return if (pkg != null) {
+                classifyNpmAliasToken(ns, pkg, token, slashIdx, tokenStart)
+            } else {
+                classifyJsGlobalOrNamespace(ns, token, slashIdx, tokenStart)
             }
         }
 
+        val dotIdx = token.indexOf('.')
+        if (dotIdx > 0) {
+            val ns = token.substring(0, dotIdx)
+            val pkg = aliases[ns]
+            return if (pkg != null) {
+                classifyNpmAliasToken(ns, pkg, token, dotIdx, tokenStart)
+            } else {
+                classifyJsGlobalOrNamespace(ns, token, dotIdx, tokenStart)
+            }
+        }
+
+        if (aliases.isNotEmpty()) {
+            return InteropCompletionContext.NpmAliasName(aliases, token, tokenStart)
+        }
+
         return InteropCompletionContext.None
+    }
+
+    private fun classifyJsGlobalOrNamespace(
+        ns: String,
+        token: String,
+        separatorIdx: Int,
+        tokenStart: Int,
+    ): InteropCompletionContext {
+        val rest = token.substring(separatorIdx + 1)
+        val parts = rest.split('.')
+        val receiver = listOf(ns) + parts.dropLast(1).filter { it.isNotEmpty() }
+        val memberPrefix = parts.last()
+        val memberStart = tokenStart + token.length - memberPrefix.length
+        return InteropCompletionContext.JsChainMember(
+            receiverSegments = receiver,
+            prefix = memberPrefix,
+            replacementStart = memberStart,
+        )
     }
 
     private fun classifyJsToken(token: String, tokenStart: Int): InteropCompletionContext {

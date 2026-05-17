@@ -1,6 +1,7 @@
 package com.cursivejssupport.util
 
 import com.cursivejssupport.index.JsSymbolIndex
+import com.cursivejssupport.npm.NsAliasResolver
 import com.intellij.psi.*
 import com.intellij.psi.util.PsiTreeUtil
 import cursive.psi.api.ClList
@@ -18,6 +19,18 @@ object JsResolveUtil {
      */
     fun resolveType(element: PsiElement?, index: JsSymbolIndex, depth: Int = 0): String? {
         if (element == null || depth > 5) return null
+
+        // 1. Constructor call (Fuse. ...) -> instance type
+        if (element is ClList) {
+            val head = getHead(element)
+            if (head is ClEditorSymbol) {
+                val ht = head.text ?: ""
+                if (ht.endsWith(".") && ht.length > 1 && !ht.startsWith(".")) {
+                    return ht.removeSuffix(".")
+                }
+            }
+        }
+
         JsInteropPsi.jsQualifiedSymbolText(element)?.let { full ->
             val segments = JsInteropChain.segmentsFromFullText(full)
             if (segments != null && segments.isNotEmpty()) {
@@ -28,6 +41,37 @@ object JsResolveUtil {
         return when (element) {
             is ClEditorSymbol -> {
                 val full = element.text ?: ""
+
+                // 2. NPM alias (e.g. Fuse aliased to fuse.js)
+                val file = element.containingFile
+                if (file != null) {
+                    val aliases = NsAliasResolver.resolveAliases(file)
+                    if (aliases.containsKey(full)) {
+                        val pkg = aliases[full]!!
+                        var type = index.resolveNpmExportType(pkg, "default")
+                        
+                        // Fallback: If default is generic or missing, check for a namespace-style global
+                        // that matches the package name (e.g. ReactDOM for react-dom)
+                        if (type == null || type == "any" || type == "object") {
+                            val possibleNamespace = pkg.split('-').joinToString("") { it.replaceFirstChar { c -> if (c.isLowerCase()) c.titlecase() else c.toString() } }
+                            if (index.isKnownGlobal(possibleNamespace)) {
+                                type = index.resolveGlobalType(possibleNamespace)
+                            }
+                            if (type == null) {
+                                // Try camelCase version too
+                                val camelNamespace = pkg.split('-').mapIndexed { i, s -> 
+                                    if (i == 0) s else s.replaceFirstChar { c -> if (c.isLowerCase()) c.titlecase() else c.toString() }
+                                }.joinToString("")
+                                if (index.isKnownGlobal(camelNamespace)) {
+                                    type = index.resolveGlobalType(camelNamespace)
+                                }
+                            }
+                        }
+                        
+                        if (type != null) return type
+                    }
+                }
+
                 if (full.startsWith("js/")) {
                     val segments = JsInteropChain.segmentsFromFullText(full)
                     if (segments != null && segments.isNotEmpty()) {
@@ -35,7 +79,7 @@ object JsResolveUtil {
                     }
                 }
 
-                // 1. Direct js/Global access (namespace split form)
+                // 3. Direct js/Global access (namespace split form)
                 if (element.namespace == "js") {
                     val name = element.name ?: ""
                     if ('.' in name) {
@@ -52,14 +96,14 @@ object JsResolveUtil {
                     if (index.resolveFunctions(name) != null) return "Function"
                 }
                 
-                // 2. js global itself
+                // 4. js global itself
                 if (element.text == "js") return "Window"
 
-                // 2. Type hint on the symbol itself
+                // 5. Type hint on the symbol itself
                 val hint = findTypeHint(element)
                 if (hint != null) return sanitizeType(hint)
 
-                // 3. Resolve to definition and check its type
+                // 6. Resolve to definition and check its type
                 val definition = resolveDefinition(element)
                 if (definition != null && definition != element) {
                     // Check hint on definition (e.g., function param [^js/Type el])

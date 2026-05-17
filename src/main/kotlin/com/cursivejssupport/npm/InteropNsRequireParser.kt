@@ -48,7 +48,7 @@ object InteropNsRequireParser {
         ) : Slot
     }
 
-    private const val MAX_SCAN = 4096
+    private const val MAX_SCAN = 16384
     private const val ALL_KEYWORDS = ":as :refer :rename :default"
 
     fun parse(doc: CharSequence, caret: Int): Slot? {
@@ -69,7 +69,7 @@ object InteropNsRequireParser {
             if (opening < openVec.offset) return null
             val inner = text.substring(opening + 1, viewCaret).stripCompletionDummy()
             return Slot.Package(
-                prefix = inner.trim(),
+                prefix = inner,
                 replacementStart = opening + 1 + scanStart,
             )
         }

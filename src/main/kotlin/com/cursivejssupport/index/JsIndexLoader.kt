@@ -9,6 +9,7 @@ import com.fasterxml.jackson.module.kotlin.readValue
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
+import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.project.Project
 import java.util.zip.GZIPInputStream
@@ -31,7 +32,7 @@ object JsIndexLoader {
 
     fun loadNpmPackages(project: Project, index: JsSymbolIndex) {
         val settings = JsSupportSettings.getInstance().state
-        val packages = NpmPackageResolver(project, settings).resolveAll()
+        val packages = project.service<NpmPackageResolver>().resolveAll()
         if (packages.isEmpty()) return
 
         val nodeExecutable = settings.nodeExecutablePath.ifBlank { null } ?: DtsParser.findNodeExecutable()
