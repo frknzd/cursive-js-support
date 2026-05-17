@@ -1,6 +1,8 @@
 package com.cursivejssupport.completion
 
 import com.cursivejssupport.npm.InteropNsRequireParser
+import com.cursivejssupport.npm.NpmBinding
+import com.cursivejssupport.npm.NpmBindingKind
 import com.intellij.codeInsight.completion.CompletionUtilCore
 
 /**
@@ -21,7 +23,7 @@ object InteropContextDetector {
     fun detect(
         doc: CharSequence,
         caret: Int,
-        aliases: Map<String, String> = emptyMap(),
+        aliases: Map<String, NpmBinding> = emptyMap(),
     ): InteropCompletionContext {
         if (caret < 0 || caret > doc.length) return InteropCompletionContext.None
         if (caret == 0) return InteropCompletionContext.None
@@ -76,7 +78,7 @@ object InteropContextDetector {
     private fun classifyToken(
         token: String,
         tokenStart: Int,
-        aliases: Map<String, String>,
+        aliases: Map<String, NpmBinding>,
     ): InteropCompletionContext {
         // (.-prop  → DotMember(asProperty = true)
         if (token.startsWith(".-")) {
@@ -109,9 +111,9 @@ object InteropContextDetector {
         val slashIdx = token.indexOf('/')
         if (slashIdx > 0) {
             val ns = token.substring(0, slashIdx)
-            val pkg = aliases[ns]
-            return if (pkg != null) {
-                classifyNpmAliasToken(ns, pkg, token, slashIdx, tokenStart)
+            val binding = aliases[ns]
+            return if (binding != null) {
+                classifyNpmAliasToken(ns, binding, token, slashIdx, tokenStart)
             } else {
                 classifyJsGlobalOrNamespace(ns, token, slashIdx, tokenStart)
             }
@@ -120,9 +122,9 @@ object InteropContextDetector {
         val dotIdx = token.indexOf('.')
         if (dotIdx > 0) {
             val ns = token.substring(0, dotIdx)
-            val pkg = aliases[ns]
-            return if (pkg != null) {
-                classifyNpmAliasToken(ns, pkg, token, dotIdx, tokenStart)
+            val binding = aliases[ns]
+            return if (binding != null) {
+                classifyNpmAliasToken(ns, binding, token, dotIdx, tokenStart)
             } else {
                 classifyJsGlobalOrNamespace(ns, token, dotIdx, tokenStart)
             }
@@ -180,11 +182,17 @@ object InteropContextDetector {
 
     private fun classifyNpmAliasToken(
         alias: String,
-        packageName: String,
+        binding: NpmBinding,
         token: String,
         slashIdx: Int,
         tokenStart: Int,
     ): InteropCompletionContext {
+        // VALUE bindings (DEFAULT, REFER) cannot be namespace-qualified: Alias/Foo is invalid
+        // ClojureScript for a direct-value binding. Return None to avoid wrong completions.
+        if (binding.kind == NpmBindingKind.DEFAULT || binding.kind == NpmBindingKind.REFER) {
+            return InteropCompletionContext.None
+        }
+        val packageName = binding.packageName
         val rest = token.substring(slashIdx + 1)
         val restStart = tokenStart + slashIdx + 1
         if ('.' !in rest) {

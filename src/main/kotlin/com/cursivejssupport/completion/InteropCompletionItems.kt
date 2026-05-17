@@ -52,8 +52,8 @@ object InteropCompletionItems {
 
     private fun emitNpmAliasNames(context: InteropCompletionContext.NpmAliasName, result: CompletionResultSet): Int {
         var n = 0
-        for ((alias, pkg) in context.availableAliases) {
-            result.addElement(npmAliasNameLookup(alias, pkg))
+        for ((alias, binding) in context.availableAliases) {
+            result.addElement(npmAliasNameLookup(alias, binding.packageName))
             n++
         }
         return n

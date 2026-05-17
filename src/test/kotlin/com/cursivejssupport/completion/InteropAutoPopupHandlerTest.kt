@@ -1,5 +1,7 @@
 package com.cursivejssupport.completion
 
+import com.cursivejssupport.npm.NpmBinding
+import com.cursivejssupport.npm.NpmBindingKind
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -45,7 +47,7 @@ class InteropAutoPopupHandlerTest {
     @Test
     fun `pops for npm alias`() {
         val text = "(React/"
-        assertTrue(InteropAutoPopupHandler.shouldOpen(text, text.length, mapOf("React" to "react")))
+        assertTrue(InteropAutoPopupHandler.shouldOpen(text, text.length, mapOf("React" to NpmBinding("react", NpmBindingKind.AS))))
     }
 
     @Test

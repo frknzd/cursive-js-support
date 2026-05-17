@@ -1,13 +1,20 @@
 package com.cursivejssupport.completion
 
+import com.cursivejssupport.npm.NpmBinding
+import com.cursivejssupport.npm.NpmBindingKind
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class InteropContextDetectorTest {
 
-    private fun detect(text: String, aliases: Map<String, String> = emptyMap()): InteropCompletionContext =
+    private fun detect(text: String, aliases: Map<String, NpmBinding> = emptyMap()): InteropCompletionContext =
         InteropContextDetector.detect(text, text.length, aliases)
+
+    private fun asBinding(pkg: String) = NpmBinding(pkg, NpmBindingKind.AS)
+    private fun defaultBinding(pkg: String) = NpmBinding(pkg, NpmBindingKind.DEFAULT)
+    private fun allBinding(pkg: String) = NpmBinding(pkg, NpmBindingKind.ALL)
+    private fun referBinding(pkg: String, export: String) = NpmBinding(pkg, NpmBindingKind.REFER, export)
 
     @Test
     fun `js slash empty prefix yields js global with empty prefix`() {
@@ -96,7 +103,7 @@ class InteropContextDetectorTest {
 
     @Test
     fun `npm alias export prefix`() {
-        val ctx = detect("(Markdown/defa", aliases = mapOf("Markdown" to "react-markdown"))
+        val ctx = detect("(Markdown/defa", aliases = mapOf("Markdown" to asBinding("react-markdown")))
         assertTrue(ctx is InteropCompletionContext.NpmAliasExport)
         ctx as InteropCompletionContext.NpmAliasExport
         assertEquals("Markdown", ctx.alias)
@@ -107,7 +114,7 @@ class InteropContextDetectorTest {
 
     @Test
     fun `npm alias export member chain`() {
-        val ctx = detect("(Markdown/default.ren", aliases = mapOf("Markdown" to "react-markdown"))
+        val ctx = detect("(Markdown/default.ren", aliases = mapOf("Markdown" to asBinding("react-markdown")))
         assertTrue(ctx is InteropCompletionContext.NpmAliasExportMember)
         ctx as InteropCompletionContext.NpmAliasExportMember
         assertEquals("Markdown", ctx.alias)
@@ -119,12 +126,34 @@ class InteropContextDetectorTest {
 
     @Test
     fun `npm alias export member chain deeper receiver`() {
-        val ctx = detect("(Markdown/default.props.cla", aliases = mapOf("Markdown" to "react-markdown"))
+        val ctx = detect("(Markdown/default.props.cla", aliases = mapOf("Markdown" to asBinding("react-markdown")))
         assertTrue(ctx is InteropCompletionContext.NpmAliasExportMember)
         ctx as InteropCompletionContext.NpmAliasExportMember
         assertEquals("default", ctx.exportName)
         assertEquals(listOf("props"), ctx.receiverSegments)
         assertEquals("cla", ctx.prefix)
+    }
+
+    @Test
+    fun `default binding slash token yields None`() {
+        val ctx = detect("(MyDefault/foo", aliases = mapOf("MyDefault" to defaultBinding("my-pkg")))
+        assertEquals(InteropCompletionContext.None, ctx)
+    }
+
+    @Test
+    fun `refer binding slash token yields None`() {
+        val ctx = detect("(useState/something", aliases = mapOf("useState" to referBinding("react", "useState")))
+        assertEquals(InteropCompletionContext.None, ctx)
+    }
+
+    @Test
+    fun `all binding slash token yields NpmAliasExport`() {
+        val ctx = detect("(MyAll/foo", aliases = mapOf("MyAll" to allBinding("my-pkg")))
+        assertTrue(ctx is InteropCompletionContext.NpmAliasExport)
+        ctx as InteropCompletionContext.NpmAliasExport
+        assertEquals("MyAll", ctx.alias)
+        assertEquals("my-pkg", ctx.packageName)
+        assertEquals("foo", ctx.prefix)
     }
 
     @Test
@@ -201,6 +230,7 @@ class InteropContextDetectorTest {
         assertTrue(":refer" in ctx.availableKeywords)
         assertTrue(":rename" in ctx.availableKeywords)
         assertTrue(":default" in ctx.availableKeywords)
+        assertTrue(":all" in ctx.availableKeywords)
     }
 
     @Test
@@ -222,7 +252,7 @@ class InteropContextDetectorTest {
     fun `chain after caret matches independent of trailing whitespace`() {
         // user types '(js/document.' then space → token ends at the dot, caret is past space
         val text = "(js/document. "
-        val ctx = InteropContextDetector.detect(text, text.length, emptyMap())
+        val ctx = InteropContextDetector.detect(text, text.length, emptyMap<String, NpmBinding>())
         // whitespace ends the token; nothing on the right side after the dot — this is bare text
         assertEquals(InteropCompletionContext.None, ctx)
     }

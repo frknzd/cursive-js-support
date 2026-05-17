@@ -102,7 +102,7 @@ object JsInteropNavigation {
         val exportName = if (text.contains("/")) text.substringAfter("/") else null
 
         if (aliases.containsKey(namespace)) {
-            val packageName = aliases[namespace]!!
+            val packageName = aliases[namespace]!!.packageName
             val anchorPath = file.virtualFile?.path
             if (exportName != null && exportName != namespace) {
                 resolveNpmAliasExportOrMemberTargets(project, index, packageName, exportName)?.let { return it }
@@ -335,7 +335,7 @@ object JsInteropNavigation {
             namespace != null -> {
                 val file = symbol.containingFile ?: return null
                 val aliases = NsAliasResolver.resolveAliases(file)
-                val pkg = aliases[namespace] ?: return null
+                val pkg = aliases[namespace]?.packageName ?: return null
                 val export = name ?: return null
                 if (index.isKnownNpmExport(pkg, export)) {
                     val anchorPath = file.virtualFile?.path
@@ -351,7 +351,7 @@ object JsInteropNavigation {
             else -> {
                 val file = symbol.containingFile ?: return null
                 val aliases = NsAliasResolver.resolveAliases(file)
-                val pkg = aliases[text] ?: return null
+                val pkg = aliases[text]?.packageName ?: return null
                 var exportKey = when {
                     index.isKnownNpmExport(pkg, "default") -> "default"
                     index.isKnownNpmExport(pkg, text) -> text

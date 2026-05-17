@@ -1,5 +1,7 @@
 package com.cursivejssupport.completion
 
+import com.cursivejssupport.npm.NpmBinding
+
 /**
  * The single, document-derived description of "what is the user trying to complete?".
  *
@@ -99,7 +101,7 @@ sealed interface InteropCompletionContext {
 
     /** `<prefix>` — suggest npm aliases themselves. */
     data class NpmAliasName(
-        val availableAliases: Map<String, String>,
+        val availableAliases: Map<String, NpmBinding>,
         override val prefix: String,
         override val replacementStart: Int,
     ) : InteropCompletionContext

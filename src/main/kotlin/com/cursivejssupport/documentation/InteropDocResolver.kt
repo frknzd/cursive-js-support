@@ -1,6 +1,7 @@
 package com.cursivejssupport.documentation
 
 import com.cursivejssupport.index.JsSymbolIndex
+import com.cursivejssupport.npm.NpmBinding
 import com.cursivejssupport.npm.NsAliasResolver
 import com.cursivejssupport.parser.JsMember
 import com.cursivejssupport.util.JsResolveUtil
@@ -61,7 +62,7 @@ object InteropDocResolver {
         namespace: String?,
         name: String,
         receiverType: String?,
-        aliases: Map<String, String>,
+        aliases: Map<String, NpmBinding>,
         index: JsSymbolIndex,
     ): InteropDocSubject {
         if (name.isEmpty()) return InteropDocSubject.Unknown
@@ -180,10 +181,10 @@ object InteropDocResolver {
     private fun resolveNpmExportFromParts(
         namespace: String,
         name: String,
-        aliases: Map<String, String>,
+        aliases: Map<String, NpmBinding>,
         index: JsSymbolIndex,
     ): InteropDocSubject {
-        val pkg = aliases[namespace] ?: return InteropDocSubject.Unknown
+        val pkg = aliases[namespace]?.packageName ?: return InteropDocSubject.Unknown
         if (!index.isKnownNpmExport(pkg, name)) return InteropDocSubject.Unknown
         return InteropDocSubject.NpmExport(
             packageName = pkg,
@@ -194,10 +195,10 @@ object InteropDocResolver {
 
     private fun resolveBareAliasFromParts(
         name: String,
-        aliases: Map<String, String>,
+        aliases: Map<String, NpmBinding>,
         index: JsSymbolIndex,
     ): InteropDocSubject {
-        val pkg = aliases[name] ?: return InteropDocSubject.Unknown
+        val pkg = aliases[name]?.packageName ?: return InteropDocSubject.Unknown
         val exportKey = when {
             index.isKnownNpmExport(pkg, "default") -> "default"
             index.isKnownNpmExport(pkg, name) -> name

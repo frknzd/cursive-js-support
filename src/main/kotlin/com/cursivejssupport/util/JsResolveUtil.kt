@@ -1,6 +1,7 @@
 package com.cursivejssupport.util
 
 import com.cursivejssupport.index.JsSymbolIndex
+import com.cursivejssupport.npm.NpmBindingKind
 import com.cursivejssupport.npm.NsAliasResolver
 import com.intellij.psi.*
 import com.intellij.psi.util.PsiTreeUtil
@@ -42,32 +43,37 @@ object JsResolveUtil {
             is ClEditorSymbol -> {
                 val full = element.text ?: ""
 
-                // 2. NPM alias (e.g. Fuse aliased to fuse.js)
+                // 2. NPM alias type resolution — depends on the binding kind
                 val file = element.containingFile
                 if (file != null) {
-                    val aliases = NsAliasResolver.resolveAliases(file)
-                    if (aliases.containsKey(full)) {
-                        val pkg = aliases[full]!!
-                        var type = index.resolveNpmExportType(pkg, "default")
-                        
-                        // Fallback: If default is generic or missing, check for a namespace-style global
-                        // that matches the package name (e.g. ReactDOM for react-dom)
-                        if (type == null || type == "any" || type == "object") {
-                            val possibleNamespace = pkg.split('-').joinToString("") { it.replaceFirstChar { c -> if (c.isLowerCase()) c.titlecase() else c.toString() } }
-                            if (index.isKnownGlobal(possibleNamespace)) {
-                                type = index.resolveGlobalType(possibleNamespace)
+                    val binding = NsAliasResolver.resolveAliases(file)[full]
+                    if (binding != null) {
+                        val type = when (binding.kind) {
+                            NpmBindingKind.REFER -> {
+                                // :refer [exportName] — resolve the specific named export's type
+                                index.resolveNpmExportType(binding.packageName, binding.exportName ?: full)
                             }
-                            if (type == null) {
-                                // Try camelCase version too
-                                val camelNamespace = pkg.split('-').mapIndexed { i, s -> 
-                                    if (i == 0) s else s.replaceFirstChar { c -> if (c.isLowerCase()) c.titlecase() else c.toString() }
-                                }.joinToString("")
-                                if (index.isKnownGlobal(camelNamespace)) {
-                                    type = index.resolveGlobalType(camelNamespace)
+                            NpmBindingKind.DEFAULT -> {
+                                // :default Alias — resolve the default export's type, with global fallback
+                                var t = index.resolveNpmExportType(binding.packageName, "default")
+                                if (t == null || t == "any" || t == "object") {
+                                    val possibleNamespace = binding.packageName.split('-').joinToString("") { it.replaceFirstChar { c -> if (c.isLowerCase()) c.titlecase() else c.toString() } }
+                                    if (index.isKnownGlobal(possibleNamespace)) t = index.resolveGlobalType(possibleNamespace)
+                                    if (t == null) {
+                                        val camelNamespace = binding.packageName.split('-').mapIndexed { i, s ->
+                                            if (i == 0) s else s.replaceFirstChar { c -> if (c.isLowerCase()) c.titlecase() else c.toString() }
+                                        }.joinToString("")
+                                        if (index.isKnownGlobal(camelNamespace)) t = index.resolveGlobalType(camelNamespace)
+                                    }
                                 }
+                                t
+                            }
+                            NpmBindingKind.AS, NpmBindingKind.ALL -> {
+                                // :as/:all Alias — the alias is a module namespace object, not a typed value.
+                                // Type inference via dot forms on the alias itself is not meaningful.
+                                null
                             }
                         }
-                        
                         if (type != null) return type
                     }
                 }

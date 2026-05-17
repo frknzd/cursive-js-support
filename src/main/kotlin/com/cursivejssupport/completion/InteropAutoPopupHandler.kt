@@ -1,5 +1,6 @@
 package com.cursivejssupport.completion
 
+import com.cursivejssupport.npm.NpmBinding
 import com.cursivejssupport.npm.NsAliasResolver
 import com.intellij.codeInsight.AutoPopupController
 import com.intellij.codeInsight.editorActions.TypedHandlerDelegate
@@ -54,7 +55,7 @@ class InteropAutoPopupHandler : TypedHandlerDelegate() {
          * Pure helper: does the document at [caret] look like an interop completion slot?
          * Used by [InteropAutoPopupHandlerTest].
          */
-        fun shouldOpen(doc: CharSequence, caret: Int, aliases: Map<String, String> = emptyMap()): Boolean =
+        fun shouldOpen(doc: CharSequence, caret: Int, aliases: Map<String, NpmBinding> = emptyMap()): Boolean =
             InteropContextDetector.detect(doc, caret, aliases) !is InteropCompletionContext.None
     }
 }

@@ -8,9 +8,9 @@ import java.util.concurrent.ConcurrentHashMap
 
 object NsAliasResolver {
 
-    private val aliasCache = ConcurrentHashMap<String, Map<String, String>>()
+    private val aliasCache = ConcurrentHashMap<String, Map<String, NpmBinding>>()
 
-    fun resolveAliases(file: PsiFile): Map<String, String> {
+    fun resolveAliases(file: PsiFile): Map<String, NpmBinding> {
         val key = "${file.virtualFile?.path ?: file.name}:${file.modificationStamp}"
         return aliasCache.computeIfAbsent(key) { computeAliases(file) }
     }
@@ -23,9 +23,9 @@ object NsAliasResolver {
         return null
     }
 
-    private fun computeAliases(file: PsiFile): Map<String, String> {
+    private fun computeAliases(file: PsiFile): Map<String, NpmBinding> {
         val nsForm = findNsForm(file) ?: return emptyMap()
-        val merged = LinkedHashMap<String, String>()
+        val merged = LinkedHashMap<String, NpmBinding>()
         for (requireForm in findAllRequireForms(nsForm)) {
             merged.putAll(extractAliases(requireForm))
         }
@@ -47,7 +47,7 @@ object NsAliasResolver {
                 var i = 1
                 while (i < items.size) {
                     val text = items[i].text
-                    if (text == ":as" || text == ":default") {
+                    if (text == ":as" || text == ":default" || text == ":all") {
                         if (i + 1 < items.size) {
                             val aliasItem = items[i + 1]
                             if (aliasItem.text == targetAlias) {
@@ -119,8 +119,8 @@ object NsAliasResolver {
             } else false
         }
 
-    private fun extractAliases(requireForm: PsiElement): Map<String, String> {
-        val aliases = mutableMapOf<String, String>()
+    private fun extractAliases(requireForm: PsiElement): Map<String, NpmBinding> {
+        val aliases = mutableMapOf<String, NpmBinding>()
 
         requireForm.children.forEach { spec ->
             if (spec.text.startsWith("[")) {
@@ -145,11 +145,29 @@ object NsAliasResolver {
                 while (i < items.size) {
                     val text = items[i].text
 
-                    if (text == ":as" || text == ":default") {
+                    if (text == ":as") {
                         if (i + 1 < items.size) {
                             val alias = items[i + 1].text
                             if (alias.isNotBlank()) {
-                                aliases[alias] = packageName
+                                aliases[alias] = NpmBinding(packageName, NpmBindingKind.AS)
+                            }
+                        }
+                        i += 2
+                        continue
+                    } else if (text == ":default") {
+                        if (i + 1 < items.size) {
+                            val alias = items[i + 1].text
+                            if (alias.isNotBlank()) {
+                                aliases[alias] = NpmBinding(packageName, NpmBindingKind.DEFAULT)
+                            }
+                        }
+                        i += 2
+                        continue
+                    } else if (text == ":all") {
+                        if (i + 1 < items.size) {
+                            val alias = items[i + 1].text
+                            if (alias.isNotBlank()) {
+                                aliases[alias] = NpmBinding(packageName, NpmBindingKind.ALL)
                             }
                         }
                         i += 2
@@ -165,7 +183,7 @@ object NsAliasResolver {
 
                                         val refName = child.text
                                         if (refName.isNotBlank()) {
-                                            aliases[refName] = packageName
+                                            aliases[refName] = NpmBinding(packageName, NpmBindingKind.REFER, exportName = refName)
                                         }
                                     }
                                 }
@@ -188,7 +206,7 @@ object NsAliasResolver {
         return aliases
     }
 
-    private fun applyRenamePairs(renameCollection: PsiElement, packageName: String, aliases: MutableMap<String, String>) {
+    private fun applyRenamePairs(renameCollection: PsiElement, packageName: String, aliases: MutableMap<String, NpmBinding>) {
         val kids = renameCollection.children.filter {
             it !is PsiWhiteSpace && it !is PsiComment &&
                 it.text != "{" && it.text != "}" &&
@@ -197,10 +215,10 @@ object NsAliasResolver {
         }
         var j = 0
         while (j + 1 < kids.size) {
-            val from = kids[j].text.removePrefix(":").trim()
-            val to = kids[j + 1].text.removePrefix(":").trim()
-            if (from.isNotBlank()) aliases[from] = packageName
-            if (to.isNotBlank()) aliases[to] = packageName
+            val from = kids[j].text.removePrefix(":").trim()  // original export name
+            val to = kids[j + 1].text.removePrefix(":").trim()  // local alias
+            if (from.isNotBlank()) aliases[from] = NpmBinding(packageName, NpmBindingKind.REFER, exportName = from)
+            if (to.isNotBlank()) aliases[to] = NpmBinding(packageName, NpmBindingKind.REFER, exportName = from)
             j += 2
         }
     }

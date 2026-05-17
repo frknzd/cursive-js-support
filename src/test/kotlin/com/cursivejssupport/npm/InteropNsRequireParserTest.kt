@@ -37,7 +37,25 @@ class InteropNsRequireParserTest {
         slot as InteropNsRequireParser.Slot.Keyword
         assertEquals("react", slot.packageName)
         assertEquals("", slot.prefix)
-        assertEquals(listOf(":as", ":refer", ":rename", ":default"), slot.availableKeywords)
+        assertTrue(":as" in slot.availableKeywords)
+        assertTrue(":refer" in slot.availableKeywords)
+        assertTrue(":rename" in slot.availableKeywords)
+        assertTrue(":default" in slot.availableKeywords)
+        assertTrue(":all" in slot.availableKeywords)
+    }
+
+    @Test
+    fun `all alias position is not a completion slot`() {
+        assertNull(parse("(ns my.app (:require [\"react\" :all MyAl"))
+    }
+
+    @Test
+    fun `keyword slot omits already used all keyword`() {
+        val slot = parse("(ns my.app (:require [\"react\" :all MyAlias ")
+        assertTrue(slot is InteropNsRequireParser.Slot.Keyword)
+        slot as InteropNsRequireParser.Slot.Keyword
+        assertTrue(":all" !in slot.availableKeywords)
+        assertTrue(":refer" in slot.availableKeywords)
     }
 
     @Test

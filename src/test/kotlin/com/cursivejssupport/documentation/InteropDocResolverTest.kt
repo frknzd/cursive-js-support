@@ -1,6 +1,8 @@
 package com.cursivejssupport.documentation
 
 import com.cursivejssupport.index.JsSymbolIndex
+import com.cursivejssupport.npm.NpmBinding
+import com.cursivejssupport.npm.NpmBindingKind
 import com.cursivejssupport.parser.JsInterface
 import com.cursivejssupport.parser.JsMember
 import com.cursivejssupport.parser.JsParam
@@ -194,7 +196,7 @@ class InteropDocResolverTest {
         val subject = InteropDocResolver.resolveFromParts(
             namespace = "react", name = "useState",
             receiverType = null,
-            aliases = mapOf("react" to "react"),
+            aliases = mapOf("react" to NpmBinding("react", NpmBindingKind.AS)),
             index = index,
         )
         assertTrue(subject is InteropDocSubject.NpmExport)
@@ -216,7 +218,7 @@ class InteropDocResolverTest {
         val subject = InteropDocResolver.resolveFromParts(
             namespace = null, name = "Markdown",
             receiverType = null,
-            aliases = mapOf("Markdown" to "react-markdown"),
+            aliases = mapOf("Markdown" to NpmBinding("react-markdown", NpmBindingKind.DEFAULT)),
             index = index,
         )
         assertTrue(subject is InteropDocSubject.NpmExport)

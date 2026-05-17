@@ -49,7 +49,7 @@ object InteropNsRequireParser {
     }
 
     private const val MAX_SCAN = 16384
-    private const val ALL_KEYWORDS = ":as :refer :rename :default"
+    private const val ALL_KEYWORDS = ":as :refer :rename :default :all"
 
     fun parse(doc: CharSequence, caret: Int): Slot? {
         if (caret !in 0..doc.length) return null
@@ -104,7 +104,7 @@ object InteropNsRequireParser {
             // Token immediately before our partial — must NOT be a `:` keyword that takes an argument.
             val prevTok = state.previousMeaningfulToken(partialStart, innermost.offset)
             val previousIsKeywordTakingArg = prevTok == ":as" || prevTok == ":default" ||
-                prevTok == ":refer" || prevTok == ":rename"
+                prevTok == ":refer" || prevTok == ":rename" || prevTok == ":all"
             if (previousIsKeywordTakingArg) return null
             val unused = availableSpecKeywords(text, innermost.offset)
             return Slot.Keyword(
