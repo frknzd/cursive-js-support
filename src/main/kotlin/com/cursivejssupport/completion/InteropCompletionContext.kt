@@ -56,6 +56,12 @@ sealed interface InteropCompletionContext {
         override val replacementStart: Int,
     ) : InteropCompletionContext
 
+    /** Inside `[goog.<partial>]` in `(:require ...)` — suggest known goog namespace names. */
+    data class GoogNamespaceRequire(
+        override val prefix: String,
+        override val replacementStart: Int,
+    ) : InteropCompletionContext
+
     /**
      * Inside `(:require ["pkg" :refer [<partial>])` (or `:rename {<partial>` … }). Only the
      * package's exports are valid here — the keyword helpers (`:as`, `:refer`, `:rename`,

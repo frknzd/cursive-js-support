@@ -30,6 +30,19 @@ object JsIndexLoader {
         }
     }
 
+    fun loadBundledGoog(index: JsSymbolIndex) {
+        val stream = JsIndexLoader::class.java.getResourceAsStream("/js/goog-symbols.json.gz")
+            ?: run { log.warn("Cursive JS Support: goog-symbols.json.gz not found — skipping goog namespace index"); return }
+        GZIPInputStream(stream).use { gz ->
+            val tree = mapper.readTree(gz)
+            tree.fields().forEach { (namespaceName, symbolsNode) ->
+                runCatching {
+                    index.loadNpmPackage(namespaceName, mapper.treeToValue(symbolsNode, ParsedSymbols::class.java))
+                }.onFailure { log.warn("Cursive JS Support: skipping goog namespace $namespaceName — ${it.message}") }
+            }
+        }
+    }
+
     fun loadNpmPackages(project: Project, index: JsSymbolIndex) {
         val settings = JsSupportSettings.getInstance().state
         val packages = project.service<NpmPackageResolver>().resolveAll()

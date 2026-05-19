@@ -54,11 +54,11 @@ class InteropCompletionContributor : CompletionContributor() {
             val document = parameters.editor.document
             val caret = min(parameters.offset, document.textLength)
             val aliases = NsAliasResolver.resolveAliases(file)
-
-            val context = InteropContextDetector.detect(document.charsSequence, caret, aliases)
-            if (context is InteropCompletionContext.None) return
-
             val index = JsSymbolIndex.getInstance()
+            val knownGoogNamespaces = if (index.isLoaded) index.getGoogNamespaceNames().toHashSet() else emptySet()
+
+            val context = InteropContextDetector.detect(document.charsSequence, caret, aliases, knownGoogNamespaces)
+            if (context is InteropCompletionContext.None) return
             
             // Set prefix matcher. If prefix is empty, we still want to match everything.
             val matcher = PlainPrefixMatcher(context.prefix, /*caseSensitive=*/false)

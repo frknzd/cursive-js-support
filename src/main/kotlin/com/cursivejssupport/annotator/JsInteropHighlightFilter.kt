@@ -73,7 +73,33 @@ class JsInteropHighlightFilter : HighlightInfoFilter {
             return false
         }
 
-        // 3b. Enclosing symbol: dotted `js/` / `namespace == js` chains and bare npm default aliases
+        // 3b. Known goog namespace names (e.g. `goog.object` appearing in (:require [goog.object :as gobj]))
+        if (index.isKnownGoogNamespace(text)) {
+            return false
+        }
+
+        // 3b2. Direct goog.ns/symbol access (e.g. `goog.object/get` without an alias)
+        val slashIdx = text.indexOf('/')
+        if (slashIdx > 0) {
+            val ns = text.substring(0, slashIdx)
+            if (index.isKnownGoogNamespace(ns)) return false
+        }
+
+        // 3b3. Constructor from :import — `goog.fx.dom.Scroll` or a class name whose alias is in the map
+        // text has already had trailing `.` stripped. If it looks like a dotted goog path, check the parent ns.
+        if (text.startsWith("goog.")) {
+            val lastDot = text.lastIndexOf('.')
+            if (lastDot > 0) {
+                val parentNs = text.substring(0, lastDot)
+                val memberName = text.substring(lastDot + 1)
+                if (index.isKnownGoogNamespace(parentNs)) {
+                    // Check if memberName is a known export of the parent namespace
+                    if (index.npmExportNames(parentNs).contains(memberName)) return false
+                }
+            }
+        }
+
+        // 3c. Enclosing symbol: dotted `js/` / `namespace == js` chains and bare npm default aliases
         if (index.isLoaded) {
             val elementAtOffset = file.findElementAt(start)
             val enclosing = PsiTreeUtil.getParentOfType(elementAtOffset, ClEditorSymbol::class.java, false)
@@ -184,6 +210,13 @@ class JsInteropHighlightFilter : HighlightInfoFilter {
             val ns = symbol.namespace
             if (ns != null && aliases.containsKey(ns)) return true
             if (full.isNotEmpty() && aliases.containsKey(full)) return true
+
+            // Goog namespace or direct goog access
+            val index = JsSymbolIndex.getInstance()
+            if (text.startsWith("goog.") && index.isKnownGoogNamespace(text)) return true
+            if (ns != null && index.isKnownGoogNamespace(ns)) return true
+            val si = full.indexOf('/')
+            if (si > 0 && index.isKnownGoogNamespace(full.substring(0, si))) return true
         }
 
         // 3. Cursive sometimes splits `js`, `/`, `Foo.bar`: the leaf at `start`

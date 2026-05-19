@@ -48,6 +48,7 @@ object InteropCompletionItems {
         is InteropCompletionContext.NpmAliasName -> emitNpmAliasNames(context, result)
         is InteropCompletionContext.NpmAliasExport -> emitNpmAliasExports(context, file, index, result)
         is InteropCompletionContext.NpmAliasExportMember -> emitNpmAliasExportMembers(context, file, index, result)
+        is InteropCompletionContext.GoogNamespaceRequire -> emitGoogNamespaces(context, index, result)
     }
 
     private fun emitNpmAliasNames(context: InteropCompletionContext.NpmAliasName, result: CompletionResultSet): Int {
@@ -243,6 +244,21 @@ object InteropCompletionItems {
         return emitMembers(receiverType, index, result, asProperty = null)
     }
 
+    private fun emitGoogNamespaces(
+        context: InteropCompletionContext.GoogNamespaceRequire,
+        index: JsSymbolIndex,
+        result: CompletionResultSet,
+    ): Int {
+        if (!index.isLoaded) return 0
+        var n = 0
+        for (name in index.getGoogNamespaceNames()) {
+            result.addElement(googNamespaceLookup(name))
+            n++
+        }
+        if (n > 0) result.stopHere()
+        return n
+    }
+
     // ─── Lookup builders ────────────────────────────────────────────────────
 
     private fun globalVariableLookup(name: String, type: String): LookupElement =
@@ -294,6 +310,12 @@ object InteropCompletionItems {
         LookupElementBuilder.create(packageName)
             .withPresentableText(packageName)
             .withTypeText("npm")
+            .withIcon(JsInteropCompletionIcons.forNpmNamespaceAlias())
+
+    private fun googNamespaceLookup(namespaceName: String): LookupElement =
+        LookupElementBuilder.create(namespaceName)
+            .withPresentableText(namespaceName)
+            .withTypeText("goog")
             .withIcon(JsInteropCompletionIcons.forNpmNamespaceAlias())
 
     private fun npmAliasNameLookup(alias: String, packageName: String): LookupElement =

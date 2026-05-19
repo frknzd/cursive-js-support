@@ -33,6 +33,13 @@ class JsSupportPlugin : ProjectActivity {
             }
 
             try {
+                JsIndexLoader.loadBundledGoog(index)
+                log.info("Cursive JS Support: bundled goog index loaded (${System.currentTimeMillis() - t0}ms)")
+            } catch (e: Exception) {
+                log.error("Cursive JS Support: failed to load bundled goog index", e)
+            }
+
+            try {
                 JsIndexLoader.loadNpmPackages(project, index)
             } catch (e: Exception) {
                 log.error("Cursive JS Support: npm indexing failed", e)

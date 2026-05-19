@@ -40,6 +40,7 @@ private class JsSymbolReferenceProvider : PsiReferenceProvider() {
         val npmAliases = NsAliasResolver.resolveAliases(file)
         val isNpmAlias = ns != null && npmAliases.containsKey(ns)
         val bareNpmAlias = ns == null && npmAliases.containsKey(trimmed)
+        val isDirectGoogAccess = ns != null && index.isKnownGoogNamespace(ns)
 
         val looksLikeJsInterop =
             trimmed == "js" ||
@@ -48,7 +49,8 @@ private class JsSymbolReferenceProvider : PsiReferenceProvider() {
                 trimmed.startsWith(".") ||
                 trimmed.startsWith(".-") ||
                 isNpmAlias ||
-                bareNpmAlias
+                bareNpmAlias ||
+                isDirectGoogAccess
 
         if (!looksLikeJsInterop) return emptyArray()
 

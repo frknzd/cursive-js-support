@@ -108,16 +108,17 @@ object JsInteropNavigation {
                 resolveNpmAliasExportOrMemberTargets(project, index, packageName, exportName)?.let { return it }
             } else {
                 val targets = mutableListOf<PsiElement>()
-                
-                // Prioritize external library target
+
                 index.getNpmExportPsiElements(project, packageName, "default")?.let { targets.addAll(it) }
                 firstPsiFromPackageTypingsEntry(project, packageName, anchorPath)?.let { targets.add(it) }
-                
-                // Include the local alias declaration as a secondary target
-                NsAliasResolver.resolveAliasDeclaration(file, namespace)?.let { targets.add(it) }
 
                 if (targets.isNotEmpty()) return targets.toTypedArray()
             }
+        }
+
+        // Direct goog.namespace/symbol access (no alias declaration required — goog is always available)
+        if (exportName != null && index.isKnownGoogNamespace(namespace)) {
+            resolveNpmAliasExportOrMemberTargets(project, index, namespace, exportName)?.let { return it }
         }
 
         if (text.startsWith("js/") || (JsInteropPsi.enclosingEditorSymbol(sourceElement)?.namespace == "js")) {
@@ -335,7 +336,9 @@ object JsInteropNavigation {
             namespace != null -> {
                 val file = symbol.containingFile ?: return null
                 val aliases = NsAliasResolver.resolveAliases(file)
-                val pkg = aliases[namespace]?.packageName ?: return null
+                val pkg = aliases[namespace]?.packageName
+                    ?: if (index.isKnownGoogNamespace(namespace)) namespace else null
+                    ?: return null
                 val export = name ?: return null
                 if (index.isKnownNpmExport(pkg, export)) {
                     val anchorPath = file.virtualFile?.path

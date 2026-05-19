@@ -24,6 +24,7 @@ object InteropContextDetector {
         doc: CharSequence,
         caret: Int,
         aliases: Map<String, NpmBinding> = emptyMap(),
+        knownGoogNamespaces: Set<String> = emptySet(),
     ): InteropCompletionContext {
         if (caret < 0 || caret > doc.length) return InteropCompletionContext.None
         if (caret == 0) return InteropCompletionContext.None
@@ -50,7 +51,7 @@ object InteropContextDetector {
             }
         }
 
-        return classifyToken(token, tokenStart, aliases)
+        return classifyToken(token, tokenStart, aliases, knownGoogNamespaces)
     }
 
     private fun fromRequireSlot(slot: InteropNsRequireParser.Slot): InteropCompletionContext =
@@ -73,12 +74,18 @@ object InteropContextDetector {
                     prefix = slot.prefix,
                     replacementStart = slot.replacementStart,
                 )
+            is InteropNsRequireParser.Slot.GoogNamespace ->
+                InteropCompletionContext.GoogNamespaceRequire(
+                    prefix = slot.prefix,
+                    replacementStart = slot.replacementStart,
+                )
         }
 
     private fun classifyToken(
         token: String,
         tokenStart: Int,
         aliases: Map<String, NpmBinding>,
+        knownGoogNamespaces: Set<String> = emptySet(),
     ): InteropCompletionContext {
         // (.-prop  → DotMember(asProperty = true)
         if (token.startsWith(".-")) {
@@ -112,10 +119,10 @@ object InteropContextDetector {
         if (slashIdx > 0) {
             val ns = token.substring(0, slashIdx)
             val binding = aliases[ns]
-            return if (binding != null) {
-                classifyNpmAliasToken(ns, binding, token, slashIdx, tokenStart)
-            } else {
-                classifyJsGlobalOrNamespace(ns, token, slashIdx, tokenStart)
+            return when {
+                binding != null -> classifyNpmAliasToken(ns, binding, token, slashIdx, tokenStart)
+                ns in knownGoogNamespaces -> classifyNpmAliasToken(ns, NpmBinding(ns, NpmBindingKind.AS), token, slashIdx, tokenStart)
+                else -> classifyJsGlobalOrNamespace(ns, token, slashIdx, tokenStart)
             }
         }
 

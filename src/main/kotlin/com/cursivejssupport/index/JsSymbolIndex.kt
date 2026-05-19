@@ -361,6 +361,12 @@ class JsSymbolIndex {
         npmExportTypes[packageName]?.get(exportName)
     fun hasMemberName(memberName: String): Boolean = memberSamples.containsKey(memberName)
 
+    fun getGoogNamespaceNames(): List<String> =
+        npmExports.keys.filter { it == "goog" || it.startsWith("goog.") }.sorted()
+
+    fun isKnownGoogNamespace(name: String): Boolean =
+        (name == "goog" || name.startsWith("goog.")) && npmExports.containsKey(name)
+
     companion object {
         @JvmStatic fun getInstance(): JsSymbolIndex = service()
     }

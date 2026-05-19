@@ -11,7 +11,7 @@ intellijPlatform {
 }
 
 group = "com.cursivejssupport"
-version = "0.3.5-SNAPSHOT"
+version = "0.4.0-SNAPSHOT"
 
 repositories {
     mavenCentral()

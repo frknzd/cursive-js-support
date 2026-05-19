@@ -46,10 +46,17 @@ object InteropNsRequireParser {
             override val prefix: String,
             override val replacementStart: Int,
         ) : Slot
+
+        /** Inside `[goog.<partial>]` in `(:require ...)` — user is typing a goog namespace name. */
+        data class GoogNamespace(
+            override val prefix: String,
+            override val replacementStart: Int,
+        ) : Slot
     }
 
     private const val MAX_SCAN = 16384
     private const val ALL_KEYWORDS = ":as :refer :rename :default :all"
+    private const val GOOG_KEYWORDS = ":as :refer"
 
     fun parse(doc: CharSequence, caret: Int): Slot? {
         if (caret !in 0..doc.length) return null
@@ -88,7 +95,9 @@ object InteropNsRequireParser {
             if (parent != null && parent.char == '[') {
                 val keyword = state.tokenImmediatelyBefore(innermost.offset, parent.offset)
                 if (keyword == ":refer" || keyword == ":rename") {
-                    val pkg = packageNameInRequireSpec(text, parent.offset) ?: return null
+                    val pkg = packageNameInRequireSpec(text, parent.offset)
+                        ?: googNamespaceInRequireSpec(text, parent.offset)
+                        ?: return null
                     return Slot.Refer(
                         packageName = pkg,
                         prefix = partial,
@@ -98,15 +107,57 @@ object InteropNsRequireParser {
             }
         }
 
+        // GoogNamespace slot: user is typing the namespace name itself inside `[goog.` in a require form.
+        if (innermost.char == '[') {
+            val googNs = googNamespaceInRequireSpec(text, innermost.offset)
+            if (googNs != null) {
+                // Determine if the partial IS the namespace token (first item position).
+                val firstItemStart = run {
+                    var k = innermost.offset + 1
+                    while (k < text.length && text[k].isWhitespace()) k++
+                    k
+                }
+                if (partialStart >= firstItemStart && !partial.startsWith(":")) {
+                    // The full namespace name is already present — check if partial is just the tail.
+                    // If the partial equals or starts from after the namespace name, it's still the namespace token.
+                    val nsEnd = firstItemStart + googNs.length
+                    if (partialStart <= nsEnd) {
+                        return Slot.GoogNamespace(
+                            prefix = partial,
+                            replacementStart = partialStart + scanStart,
+                        )
+                    }
+                }
+            } else if (partial.startsWith("goog") && !partial.startsWith(":")) {
+                // User is typing a goog namespace name from scratch (no complete token before partial yet)
+                if (!state.hasStringBefore(innermost.offset)) {
+                    val firstItemStart = run {
+                        var k = innermost.offset + 1
+                        while (k < text.length && text[k].isWhitespace()) k++
+                        k
+                    }
+                    if (partialStart >= firstItemStart) {
+                        return Slot.GoogNamespace(
+                            prefix = partial,
+                            replacementStart = partialStart + scanStart,
+                        )
+                    }
+                }
+            }
+        }
+
         // Keyword slot inside the require spec: `["pkg" |` or `["pkg" :as Alias |`.
         if (innermost.char == '[') {
-            val pkg = packageNameInRequireSpec(text, innermost.offset) ?: return null
+            val pkg = packageNameInRequireSpec(text, innermost.offset)
+                ?: googNamespaceInRequireSpec(text, innermost.offset)
+                ?: return null
             // Token immediately before our partial — must NOT be a `:` keyword that takes an argument.
             val prevTok = state.previousMeaningfulToken(partialStart, innermost.offset)
             val previousIsKeywordTakingArg = prevTok == ":as" || prevTok == ":default" ||
                 prevTok == ":refer" || prevTok == ":rename" || prevTok == ":all"
             if (previousIsKeywordTakingArg) return null
-            val unused = availableSpecKeywords(text, innermost.offset)
+            val isGoog = pkg == "goog" || pkg.startsWith("goog.")
+            val unused = if (isGoog) availableGoogSpecKeywords(text, innermost.offset) else availableSpecKeywords(text, innermost.offset)
             return Slot.Keyword(
                 packageName = pkg,
                 availableKeywords = unused,
@@ -165,6 +216,15 @@ object InteropNsRequireParser {
             if (start >= end) return null
             return text.substring(start, end)
         }
+
+        /** Returns true if there is a `"` character between [afterOffset] and the end of the scanned text. */
+        fun hasStringBefore(afterOffset: Int): Boolean {
+            for (i in afterOffset + 1 until text.length) {
+                if (text[i] == '"') return true
+                if (text[i] == '[' || text[i] == '(' || text[i] == '{') return false
+            }
+            return false
+        }
     }
 
     private fun lex(text: String, until: Int): LexState {
@@ -222,10 +282,26 @@ object InteropNsRequireParser {
         return name.takeIf { it.isNotEmpty() }
     }
 
+    private fun googNamespaceInRequireSpec(text: String, openIndex: Int): String? {
+        var i = openIndex + 1
+        while (i < text.length && text[i].isWhitespace()) i++
+        if (i >= text.length || text[i] == '"') return null
+        val start = i
+        while (i < text.length && isSymbolChar(text[i]) && !text[i].isWhitespace()) i++
+        val name = text.substring(start, i).stripCompletionDummy().trim()
+        return if (name == "goog" || name.startsWith("goog.")) name else null
+    }
+
     private fun availableSpecKeywords(text: String, requireSpecOpen: Int): List<String> {
         val end = matchingCloseOrTextEnd(text, requireSpecOpen)
         val body = text.substring(requireSpecOpen + 1, end)
         return ALL_KEYWORDS.split(' ').filter { !containsToken(body, it) }
+    }
+
+    private fun availableGoogSpecKeywords(text: String, requireSpecOpen: Int): List<String> {
+        val end = matchingCloseOrTextEnd(text, requireSpecOpen)
+        val body = text.substring(requireSpecOpen + 1, end)
+        return GOOG_KEYWORDS.split(' ').filter { !containsToken(body, it) }
     }
 
     private fun matchingCloseOrTextEnd(text: String, openIndex: Int): Int {

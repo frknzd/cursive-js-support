@@ -1,0 +1,5 @@
+{
+  "dependencies": {
+    "google-closure-library": "^20230802.0.0"
+  }
+}
