@@ -63,6 +63,19 @@ sealed interface InteropCompletionContext {
     ) : InteropCompletionContext
 
     /**
+     * `goog` or `goog.<partial>` typed in code (no slash yet) — complete the full goog
+     * namespace name, e.g. `goog.str` → `goog.string`, `goog.dom`.
+     *
+     * Distinct from [GoogNamespaceRequire] which fires inside `(:require ...)` forms.
+     * [prefix] is the full typed token (e.g. `"goog.str"`); the prefix matcher filters
+     * all known namespace names that start with it, and replacement covers the whole token.
+     */
+    data class GoogNamespaceName(
+        override val prefix: String,
+        override val replacementStart: Int,
+    ) : InteropCompletionContext
+
+    /**
      * Inside `(:require ["pkg" :refer [<partial>])` (or `:rename {<partial>` … }). Only the
      * package's exports are valid here — the keyword helpers (`:as`, `:refer`, `:rename`,
      * `:default`) belong outside this vector and are surfaced via [NsRequireKeyword].

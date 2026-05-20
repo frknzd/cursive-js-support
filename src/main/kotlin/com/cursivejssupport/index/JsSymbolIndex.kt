@@ -263,8 +263,13 @@ class JsSymbolIndex {
     }
 
     private fun resolveLocation(project: Project, location: JsLocation): PsiElement? {
-        val virtualFile = BundledDomLibs.resolveVirtualFile(location.filePath)
+        val virtualFile = BundledGoogLibs.resolveVirtualFile(location.filePath)
+            ?: BundledDomLibs.resolveVirtualFile(location.filePath)
             ?: LocalFileSystem.getInstance().findFileByPath(location.filePath)
+            ?: run {
+                val base = project.basePath ?: return@run null
+                LocalFileSystem.getInstance().findFileByPath("$base/${location.filePath}")
+            }
 
         if (virtualFile == null) {
             log.warn("Could not find file for JS location (check path is absolute and exists): ${location.filePath}")
@@ -294,6 +299,8 @@ class JsSymbolIndex {
     fun isKnownGlobal(name: String): Boolean = globals.containsKey(name) || functions.containsKey(name)
     fun resolveGlobalInfo(name: String): JsVariableInfo? = globals[name]
     fun resolveFunctions(name: String): List<JsMember>? = functions[name]
+    fun isConstructorGlobal(name: String): Boolean =
+        globals[name]?.type?.startsWith("TYPE\$") == true
     fun isKnownNpmPackage(packageName: String): Boolean = npmExports.containsKey(packageName)
     fun isKnownNpmExport(packageName: String, symbolName: String): Boolean = npmExports[packageName]?.containsKey(symbolName) == true
     fun resolveGlobalType(name: String): String? = globals[name]?.type
@@ -301,7 +308,7 @@ class JsSymbolIndex {
 
     fun resolveMembers(typeName: String): Map<String, JsResolvedMember> {
         val out = linkedMapOf<String, JsResolvedMember>()
-        collectMembers(typeName, distance = 0, seen = mutableSetOf(), out = out)
+        collectMembers(canonicalType(typeName), distance = 0, seen = mutableSetOf(), out = out)
         return out
     }
 
@@ -328,28 +335,45 @@ class JsSymbolIndex {
             )
         }
         for (base in iface.extends) {
-            collectMembers(base, distance + 1, seen, out)
+            collectMembers(canonicalType(base), distance + 1, seen, out)
         }
     }
 
     /**
      * Resolves a dotted `js/` chain to the resulting TypeScript type name after walking
      * globals, properties, and method return types (first overload).
+     *
+     * TypeScript emits union/intersection types like `Window&any` or `Node|null` for many
+     * globals and member return types. We strip the extra parts via [canonicalType] so that
+     * interface lookups succeed (the index only stores plain names like `Window` or `Node`).
      */
     fun resolveJsChainType(segments: List<String>): String? {
         if (segments.isEmpty()) return null
-        var type = resolveGlobalType(segments[0])
+        var type = resolveGlobalType(segments[0])?.let { canonicalType(it) }
             ?: if (resolveFunctions(segments[0]) != null) "Function" else null
             ?: return null
         for (i in 1 until segments.size) {
             val memberName = segments[i]
             val member = resolveMember(type, memberName)?.first ?: return null
-            type = when (member.kind) {
+            type = canonicalType(when (member.kind) {
                 "method" -> member.returns
                 else -> member.type
-            }
+            })
         }
         return type
+    }
+
+    /**
+     * Strips TypeScript union (`|`) and intersection (`&`) suffixes so that a raw type like
+     * `Window&any` or `Node|null` maps to the plain interface name the index actually stores.
+     * The first non-trivial alternative wins; `any`, `null`, `undefined`, and `never` are
+     * skipped because they carry no useful interface information.
+     */
+    fun canonicalType(rawType: String): String {
+        if ('&' !in rawType && '|' !in rawType) return rawType
+        val parts = rawType.split('&', '|').map { it.trim() }
+        return parts.firstOrNull { it.isNotEmpty() && it != "any" && it != "null" && it != "undefined" && it != "never" }
+            ?: rawType
     }
 
     fun allGlobalNames(): Collection<String> = globals.keys

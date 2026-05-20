@@ -17,7 +17,7 @@
  *   2. Modern:    goog.module('ns') + function fn(...) {} + exports = { fn, ... }
  */
 
-import { createWriteStream, readdirSync, readFileSync } from 'fs';
+import { createWriteStream, readdirSync, readFileSync, cpSync, mkdirSync } from 'fs';
 import { createGzip } from 'zlib';
 import { resolve, join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -26,6 +26,10 @@ import { createRequire } from 'module';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(__dirname, '..');
 const outputPath = join(projectRoot, 'src/main/resources/js/goog-symbols.json.gz');
+
+// Logical prefix used inside the index — must match BundledGoogLibs.LOGICAL_PREFIX
+const CLOSURE_ROOT_PREFIX = join(projectRoot, 'node_modules/google-closure-library/');
+const BUNDLED_CLOSURE_PREFIX = 'js/lib/google-closure-library/';
 
 // Load the bundled typescript.js (same one used by dts-extractor-runner.js)
 const tsPath = join(projectRoot, 'src/main/resources/js/typescript.js');
@@ -59,6 +63,11 @@ function walkJs(dir, out = []) {
 }
 
 function relPath(abs) {
+    // Remap closure library paths to the bundled resource prefix so BundledGoogLibs
+    // can resolve them at runtime (both from disk in dev mode and from the plugin JAR).
+    if (abs.startsWith(CLOSURE_ROOT_PREFIX)) {
+        return BUNDLED_CLOSURE_PREFIX + abs.slice(CLOSURE_ROOT_PREFIX.length);
+    }
     return abs.replace(projectRoot + '/', '');
 }
 
@@ -534,6 +543,25 @@ if (index['goog.object']) {
 } else {
     console.log('goog.object: NOT FOUND in index');
 }
+
+// ─── Copy closure JS source into plugin resources ───────────────────────────
+// This makes the source files available to BundledGoogLibs at runtime so that
+// Cmd+click / Go-to-Declaration can navigate into the closure library source.
+
+const closureSrcDir = join(projectRoot, 'node_modules/google-closure-library/closure');
+const closureDestDir = join(projectRoot, 'src/main/resources/js/lib/google-closure-library/closure');
+
+console.log(`\nCopying closure source → ${closureDestDir} ...`);
+mkdirSync(closureDestDir, { recursive: true });
+cpSync(closureSrcDir, closureDestDir, {
+    recursive: true,
+    filter: (src) => {
+        // Exclude test files to keep the JAR lean.
+        if (src.endsWith('_test.js')) return false;
+        return true;
+    },
+});
+console.log('Closure source copied.');
 
 // ─── Write output ────────────────────────────────────────────────────────────
 

@@ -126,6 +126,19 @@ object InteropContextDetector {
             }
         }
 
+        // goog namespace name — no slash yet, user is typing the namespace to use in code.
+        // Must come before the dotIdx check so "goog.string" becomes GoogNamespaceName rather
+        // than JsChainMember (which would fail: "goog" is not a js global with a known type).
+        // Also match short prefixes like "go", "goo" so completions fire before the user types
+        // the full word — but require ≥2 chars to avoid false positives on single-letter tokens.
+        if (knownGoogNamespaces.isNotEmpty() && token.length >= 2 &&
+            (token.startsWith("goog.") || "goog".startsWith(token))) {
+            return InteropCompletionContext.GoogNamespaceName(
+                prefix = token,
+                replacementStart = tokenStart,
+            )
+        }
+
         val dotIdx = token.indexOf('.')
         if (dotIdx > 0) {
             val ns = token.substring(0, dotIdx)

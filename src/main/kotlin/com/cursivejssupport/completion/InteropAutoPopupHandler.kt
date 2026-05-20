@@ -1,5 +1,6 @@
 package com.cursivejssupport.completion
 
+import com.cursivejssupport.index.JsSymbolIndex
 import com.cursivejssupport.npm.NpmBinding
 import com.cursivejssupport.npm.NsAliasResolver
 import com.intellij.codeInsight.AutoPopupController
@@ -30,7 +31,9 @@ class InteropAutoPopupHandler : TypedHandlerDelegate() {
                 val doc = editor.document
                 val caret = min(editor.caretModel.offset, doc.textLength)
                 val aliases = NsAliasResolver.resolveAliases(committed)
-                val ctx = InteropContextDetector.detect(doc.charsSequence, caret, aliases)
+                val index = JsSymbolIndex.getInstance()
+                val googNs = if (index.isLoaded) index.getGoogNamespaceNames().toHashSet() else emptySet()
+                val ctx = InteropContextDetector.detect(doc.charsSequence, caret, aliases, googNs)
                 ctx !is InteropCompletionContext.None
             },
         )
@@ -55,7 +58,12 @@ class InteropAutoPopupHandler : TypedHandlerDelegate() {
          * Pure helper: does the document at [caret] look like an interop completion slot?
          * Used by [InteropAutoPopupHandlerTest].
          */
-        fun shouldOpen(doc: CharSequence, caret: Int, aliases: Map<String, NpmBinding> = emptyMap()): Boolean =
-            InteropContextDetector.detect(doc, caret, aliases) !is InteropCompletionContext.None
+        fun shouldOpen(
+            doc: CharSequence,
+            caret: Int,
+            aliases: Map<String, NpmBinding> = emptyMap(),
+            knownGoogNamespaces: Set<String> = emptySet(),
+        ): Boolean =
+            InteropContextDetector.detect(doc, caret, aliases, knownGoogNamespaces) !is InteropCompletionContext.None
     }
 }

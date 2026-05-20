@@ -49,6 +49,7 @@ object InteropCompletionItems {
         is InteropCompletionContext.NpmAliasExport -> emitNpmAliasExports(context, file, index, result)
         is InteropCompletionContext.NpmAliasExportMember -> emitNpmAliasExportMembers(context, file, index, result)
         is InteropCompletionContext.GoogNamespaceRequire -> emitGoogNamespaces(context, index, result)
+        is InteropCompletionContext.GoogNamespaceName -> emitGoogNamespaceNames(context, index, result)
     }
 
     private fun emitNpmAliasNames(context: InteropCompletionContext.NpmAliasName, result: CompletionResultSet): Int {
@@ -81,8 +82,13 @@ object InteropCompletionItems {
         if (!index.isLoaded) return 0
         var n = 0
         for (name in index.allGlobalNames()) {
-            val type = index.resolveGlobalType(name) ?: continue
-            result.addElement(globalVariableLookup(name, type))
+            val info = index.resolveGlobalInfo(name) ?: continue
+            val element = if (index.isConstructorGlobal(name)) {
+                globalConstructorLookup(name)
+            } else {
+                globalVariableLookup(name, info.type)
+            }
+            result.addElement(element)
             n++
         }
         for (name in index.allFunctionNames()) {
@@ -259,6 +265,20 @@ object InteropCompletionItems {
         return n
     }
 
+    private fun emitGoogNamespaceNames(
+        context: InteropCompletionContext.GoogNamespaceName,
+        index: JsSymbolIndex,
+        result: CompletionResultSet,
+    ): Int {
+        if (!index.isLoaded) return 0
+        var n = 0
+        for (name in index.getGoogNamespaceNames()) {
+            result.addElement(googNamespaceLookup(name))
+            n++
+        }
+        return n
+    }
+
     // ─── Lookup builders ────────────────────────────────────────────────────
 
     private fun globalVariableLookup(name: String, type: String): LookupElement =
@@ -266,6 +286,12 @@ object InteropCompletionItems {
             .withPresentableText(name)
             .withTypeText(type)
             .withIcon(JsInteropCompletionIcons.forGlobalVariable())
+
+    private fun globalConstructorLookup(name: String): LookupElement =
+        LookupElementBuilder.create(name)
+            .withPresentableText(name)
+            .withTypeText("class")
+            .withIcon(JsInteropCompletionIcons.forGlobalConstructor())
 
     private fun globalFunctionLookup(name: String): LookupElement =
         LookupElementBuilder.create(name)

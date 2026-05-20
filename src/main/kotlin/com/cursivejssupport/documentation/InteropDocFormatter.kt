@@ -35,8 +35,13 @@ object InteropDocFormatter {
 
     private fun formatJsGlobal(subject: InteropDocSubject.JsGlobal): String {
         val definition = buildString {
-            line("js/${subject.name}: ${subject.info.type}")
-            line("global value")
+            if (subject.isConstructor) {
+                line("class ${escapeInline(subject.name)}")
+                line("constructor")
+            } else {
+                line("js/${subject.name}: ${escapeInline(subject.info.type)}")
+                line("global value")
+            }
         }
         return assemble(
             definition = definition,

@@ -79,7 +79,9 @@ object InteropDocResolver {
     // ─── js/* ──────────────────────────────────────────────────────────────
 
     private fun resolveJsGlobal(name: String, index: JsSymbolIndex): InteropDocSubject {
-        index.resolveGlobalInfo(name)?.let { return InteropDocSubject.JsGlobal(name, it) }
+        index.resolveGlobalInfo(name)?.let {
+            return InteropDocSubject.JsGlobal(name, it, isConstructor = index.isConstructorGlobal(name))
+        }
         val overloads = index.resolveFunctions(name).orEmpty()
         val first = overloads.firstOrNull() ?: return InteropDocSubject.Unknown
         return InteropDocSubject.JsFunction(name, first, overloads.size)

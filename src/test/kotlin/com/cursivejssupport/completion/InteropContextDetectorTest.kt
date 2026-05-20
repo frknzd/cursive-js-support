@@ -3,13 +3,20 @@ package com.cursivejssupport.completion
 import com.cursivejssupport.npm.NpmBinding
 import com.cursivejssupport.npm.NpmBindingKind
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class InteropContextDetectorTest {
 
-    private fun detect(text: String, aliases: Map<String, NpmBinding> = emptyMap()): InteropCompletionContext =
-        InteropContextDetector.detect(text, text.length, aliases)
+    private val GOOG_NS = setOf("goog", "goog.array", "goog.dom", "goog.string", "goog.structs", "goog.events")
+
+    private fun detect(
+        text: String,
+        aliases: Map<String, NpmBinding> = emptyMap(),
+        googNs: Set<String> = emptySet(),
+    ): InteropCompletionContext =
+        InteropContextDetector.detect(text, text.length, aliases, googNs)
 
     private fun asBinding(pkg: String) = NpmBinding(pkg, NpmBindingKind.AS)
     private fun defaultBinding(pkg: String) = NpmBinding(pkg, NpmBindingKind.DEFAULT)
@@ -255,5 +262,70 @@ class InteropContextDetectorTest {
         val ctx = InteropContextDetector.detect(text, text.length, emptyMap<String, NpmBinding>())
         // whitespace ends the token; nothing on the right side after the dot — this is bare text
         assertEquals(InteropCompletionContext.None, ctx)
+    }
+
+    // ─── GoogNamespaceName ────────────────────────────────────────────────────
+
+    @Test fun `bare goog with known namespaces yields GoogNamespaceName`() {
+        val ctx = detect("(goog", googNs = GOOG_NS) as InteropCompletionContext.GoogNamespaceName
+        assertEquals("goog", ctx.prefix)
+    }
+
+    @Test fun `goog dot partial yields GoogNamespaceName`() {
+        val ctx = detect("(goog.", googNs = GOOG_NS) as InteropCompletionContext.GoogNamespaceName
+        assertEquals("goog.", ctx.prefix)
+    }
+
+    @Test fun `goog dot string prefix yields GoogNamespaceName`() {
+        val ctx = detect("(goog.str", googNs = GOOG_NS) as InteropCompletionContext.GoogNamespaceName
+        assertEquals("goog.str", ctx.prefix)
+    }
+
+    @Test fun `goog dot dom prefix yields GoogNamespaceName`() {
+        val ctx = detect("(goog.dom", googNs = GOOG_NS) as InteropCompletionContext.GoogNamespaceName
+        assertEquals("goog.dom", ctx.prefix)
+    }
+
+    @Test fun `goog dot full namespace yields GoogNamespaceName`() {
+        val ctx = detect("(goog.string", googNs = GOOG_NS) as InteropCompletionContext.GoogNamespaceName
+        assertEquals("goog.string", ctx.prefix)
+    }
+
+    @Test fun `goog without known namespaces yields None`() {
+        // No goog symbols loaded — don't offer fake completions
+        assertEquals(InteropCompletionContext.None, detect("(goog", googNs = emptySet()))
+    }
+
+    @Test fun `goog slash function yields NpmAliasExport not GoogNamespaceName`() {
+        // goog.string/format — slash present, the namespace-export path wins
+        val ctx = detect("(goog.string/", googNs = GOOG_NS)
+        assertTrue("expected NpmAliasExport, got $ctx", ctx is InteropCompletionContext.NpmAliasExport)
+        ctx as InteropCompletionContext.NpmAliasExport
+        assertEquals("goog.string", ctx.packageName)
+    }
+
+    @Test fun `goog slash partial function yields NpmAliasExport`() {
+        val ctx = detect("(goog.string/for", googNs = GOOG_NS)
+        assertTrue(ctx is InteropCompletionContext.NpmAliasExport)
+        ctx as InteropCompletionContext.NpmAliasExport
+        assertEquals("for", ctx.prefix)
+        assertEquals("goog.string", ctx.packageName)
+    }
+
+    @Test fun `goog events namespace yields GoogNamespaceName`() {
+        val ctx = detect("goog.events", googNs = GOOG_NS) as InteropCompletionContext.GoogNamespaceName
+        assertEquals("goog.events", ctx.prefix)
+    }
+
+    @Test fun `shouldOpen fires for bare goog token`() {
+        assertTrue(InteropAutoPopupHandler.shouldOpen("(goog", 5, knownGoogNamespaces = GOOG_NS))
+    }
+
+    @Test fun `shouldOpen fires for goog dot`() {
+        assertTrue(InteropAutoPopupHandler.shouldOpen("(goog.", 6, knownGoogNamespaces = GOOG_NS))
+    }
+
+    @Test fun `shouldOpen does not fire for bare goog without index`() {
+        assertFalse(InteropAutoPopupHandler.shouldOpen("(goog", 5, knownGoogNamespaces = emptySet()))
     }
 }

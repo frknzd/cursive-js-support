@@ -1,5 +1,6 @@
 package com.cursivejssupport.completion
 
+import com.cursivejssupport.index.JsSymbolIndex
 import com.cursivejssupport.npm.NsAliasResolver
 import com.cursivejssupport.util.JsInteropPsi
 import com.intellij.codeInsight.completion.CompletionConfidence
@@ -39,7 +40,9 @@ class JsInteropCompletionConfidence : CompletionConfidence() {
         // Use our context detector to decide. If we identify an interop context,
         // we definitely want the popup (ThreeState.NO means "do not skip").
         val aliases = NsAliasResolver.resolveAliases(psiFile)
-        val ctx = InteropContextDetector.detect(doc.charsSequence, end, aliases)
+        val index = JsSymbolIndex.getInstance()
+        val googNs = if (index.isLoaded) index.getGoogNamespaceNames().toHashSet() else emptySet()
+        val ctx = InteropContextDetector.detect(doc.charsSequence, end, aliases, googNs)
         if (ctx !is InteropCompletionContext.None) {
             // Special handling for require package strings: always allow autopopup
             if (ctx is InteropCompletionContext.NsRequirePackage) return ThreeState.NO

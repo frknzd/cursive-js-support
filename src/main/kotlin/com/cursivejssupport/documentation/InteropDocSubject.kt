@@ -17,6 +17,7 @@ sealed interface InteropDocSubject {
     data class JsGlobal(
         val name: String,
         val info: JsVariableInfo,
+        val isConstructor: Boolean = false,
     ) : InteropDocSubject
 
     /** `js/<name>` resolving to a function (or a function-shaped global). */

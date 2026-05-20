@@ -13,6 +13,8 @@ object JsInteropCompletionIcons {
 
     fun forGlobalVariable() = AllIcons.Nodes.Variable
 
+    fun forGlobalConstructor() = AllIcons.Nodes.Class
+
     fun forGlobalFunction() = AllIcons.Nodes.Function
 
     fun forNpmDefaultExport() = AllIcons.Nodes.Class
