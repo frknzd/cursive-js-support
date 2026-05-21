@@ -72,7 +72,6 @@ object InteropCompletionItems {
             result.addElement(npmPackageLookup(name))
             n++
         }
-        if (n > 0) result.stopHere()
         return n
     }
 
@@ -261,7 +260,6 @@ object InteropCompletionItems {
             result.addElement(googNamespaceLookup(name))
             n++
         }
-        if (n > 0) result.stopHere()
         return n
     }
 

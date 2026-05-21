@@ -61,37 +61,8 @@ class InteropCompletionContributor : CompletionContributor() {
             if (context is InteropCompletionContext.None) return
             
             // Set prefix matcher. If prefix is empty, we still want to match everything.
-            val matcher = PlainPrefixMatcher(context.prefix, /*caseSensitive=*/false)
+            val matcher = PlainPrefixMatcher(context.prefix,false)
             val result = baseResult.withPrefixMatcher(matcher)
-
-            // NsRequirePackage calls stopHere() inside emitNpmPackages; all other interop
-            // contexts call stopHere() here once we know we produced at least one item, so
-            // Cursive's generic <global> suggestions don't appear alongside ours.
-            // GoogNamespaceName is intentionally excluded from stopHere() so Cursive's own
-            // completions (e.g. core.async `go`, `go-loop`) still appear alongside goog ones.
-            val stopHere: Boolean
-            val n: Int = when (context) {
-                is InteropCompletionContext.NsRequirePackage -> {
-                    if (context.prefix.isEmpty()) result.restartCompletionOnAnyPrefixChange()
-                    emitNpmPackages(context, file, parameters, result)
-                    stopHere = false // emitNpmPackages handles stopHere internally
-                    0
-                }
-                is InteropCompletionContext.DotMember -> {
-                    stopHere = true
-                    val list = enclosingClList(parameters.position)
-                    InteropCompletionItems.emit(context, file, index, result, list)
-                }
-                is InteropCompletionContext.GoogNamespaceName -> {
-                    stopHere = false
-                    InteropCompletionItems.emit(context, file, index, result, null)
-                }
-                else -> {
-                    stopHere = true
-                    InteropCompletionItems.emit(context, file, index, result, null)
-                }
-            }
-            if (n > 0 && stopHere) result.stopHere()
         }
 
         private fun emitNpmPackages(
