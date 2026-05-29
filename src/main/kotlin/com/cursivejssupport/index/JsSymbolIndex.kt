@@ -366,14 +366,26 @@ class JsSymbolIndex {
     /**
      * Strips TypeScript union (`|`) and intersection (`&`) suffixes so that a raw type like
      * `Window&any` or `Node|null` maps to the plain interface name the index actually stores.
-     * The first non-trivial alternative wins; `any`, `null`, `undefined`, and `never` are
-     * skipped because they carry no useful interface information.
+     *
+     * Two-pass strategy: prefer a concrete named interface type over JS primitives. This matters
+     * because string-literal union members (e.g. `"absolute" | CSSPositionValue`) now resolve to
+     * `string` rather than `any`, and without the preference pass `string` would shadow
+     * the useful interface type.
+     *
+     * Pass 1: pick first non-primitive, non-trivial part (an interface name).
+     * Pass 2: fall back to first non-trivial part (allows primitive-only unions like `string|number`
+     *         to still yield `string`).
      */
     fun canonicalType(rawType: String): String {
         if ('&' !in rawType && '|' !in rawType) return rawType
         val parts = rawType.split('&', '|').map { it.trim() }
-        return parts.firstOrNull { it.isNotEmpty() && it != "any" && it != "null" && it != "undefined" && it != "never" }
-            ?: rawType
+        // Pass 1: prefer a concrete interface name over primitives / meta-types.
+        val interfacePart = parts.firstOrNull {
+            it.isNotEmpty() && it !in TRIVIAL_TYPES && it !in PRIMITIVE_TYPES
+        }
+        if (interfacePart != null) return interfacePart
+        // Pass 2: any non-trivial part (handles `string|null`, `number|undefined`, etc.)
+        return parts.firstOrNull { it.isNotEmpty() && it !in TRIVIAL_TYPES } ?: rawType
     }
 
     fun allGlobalNames(): Collection<String> = globals.keys
@@ -392,6 +404,9 @@ class JsSymbolIndex {
         (name == "goog" || name.startsWith("goog.")) && npmExports.containsKey(name)
 
     companion object {
+        private val TRIVIAL_TYPES = setOf("any", "null", "undefined", "never", "unknown", "void")
+        private val PRIMITIVE_TYPES = setOf("string", "number", "boolean", "bigint", "symbol", "object")
+
         @JvmStatic fun getInstance(): JsSymbolIndex = service()
     }
 }

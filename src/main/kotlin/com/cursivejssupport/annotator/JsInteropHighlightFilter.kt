@@ -117,12 +117,16 @@ class JsInteropHighlightFilter : HighlightInfoFilter {
         }
 
         // 3d. Bare method/property name inside (.. root step1 step2 ...) chain forms.
-        // The .. macro is exclusively JS interop in ClojureScript — bare names here are JS members, not Clojure vars.
-        if (!text.startsWith(".") && '/' !in text) {
+        // Only suppress when the member actually resolves on the inferred receiver type.
+        if (!text.startsWith(".") && '/' !in text && index.isLoaded) {
             val elementAtOffset = file.findElementAt(start)
             val sym = PsiTreeUtil.getParentOfType(elementAtOffset, ClEditorSymbol::class.java, false)
-            if (sym != null && isInsideDotDotStep(sym)) {
-                return false
+            if (sym != null) {
+                val receiverType = dotDotChainReceiverType(sym, index)
+                if (receiverType != null) {
+                    val memberName = if (text.startsWith("-")) text.drop(1) else text
+                    if (index.resolveMember(receiverType, memberName) != null) return false
+                }
             }
         }
 
@@ -238,14 +242,32 @@ class JsInteropHighlightFilter : HighlightInfoFilter {
         return false
     }
 
-    private fun isInsideDotDotStep(symbol: ClEditorSymbol): Boolean {
-        val list = symbol.parent as? ClList ?: return false
+    /**
+     * If [symbol] is a step at position ≥ 2 inside `(.. root step1 step2 ...)`, walks the prior
+     * steps and returns the receiver type for this step. Returns null when the symbol is not a
+     * chain step or the chain cannot be fully resolved up to this point.
+     */
+    private fun dotDotChainReceiverType(symbol: ClEditorSymbol, index: JsSymbolIndex): String? {
+        val list = symbol.parent as? ClList ?: return null
         val children = list.children.filter {
             it.text != "(" && it.text != ")" && it !is PsiWhiteSpace && it !is PsiComment
         }
-        if (children.isEmpty() || children[0].text != "..") return false
-        val rootElement = children.getOrNull(1) ?: return false
-        return symbol.textOffset > rootElement.textOffset
+        if (children.isEmpty() || children[0].text != "..") return null
+        val rootElement = children.getOrNull(1) ?: return null
+        if (symbol.textOffset <= rootElement.textOffset) return null
+
+        var currentType = JsResolveUtil.resolveType(rootElement, index) ?: return null
+        val symOffset = symbol.textOffset
+        for (step in children.drop(2)) {
+            if (step.textOffset >= symOffset) break
+            val stepText = step.text ?: continue
+            val mn = if (stepText.startsWith("-")) stepText.drop(1) else stepText
+            val member = index.resolveMember(currentType, mn)?.first ?: return null
+            val raw = if (member.kind == "method") member.returns else member.type
+            currentType = index.canonicalType(raw)
+            if (currentType.isEmpty() || currentType == "any" || currentType == "void") return null
+        }
+        return currentType
     }
 
     companion object {

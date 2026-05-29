@@ -94,6 +94,9 @@ function visitStatements(statements, result, filename, sourceFile) {
             case ts.SyntaxKind.ExportDeclaration:
                 collectExportDeclaration(node, result, filename, sourceFile);
                 break;
+            case ts.SyntaxKind.TypeAliasDeclaration:
+                collectTypeAlias(node, result, filename, sourceFile);
+                break;
             case 271: // ts.SyntaxKind.NamespaceExportDeclaration
                 if (node.name && node.name.text) {
                     result.variables[node.name.text] = {
@@ -257,6 +260,19 @@ function mergeInterface(node, result, filename, sourceFile) {
             continue;
         }
 
+        // ConstructSignature: `new(args): T` inside an interface (not a class constructor).
+        if (m.kind === ts.SyntaxKind.ConstructSignature) {
+            if (!Object.prototype.hasOwnProperty.call(targetMembers, 'new')) targetMembers['new'] = [];
+            targetMembers['new'].push({
+                kind: 'method',
+                params: extractParams(m.parameters, result),
+                returns: typeName(m.type, result),
+                doc: jsDocText(m, sourceFile),
+                location: getLocation(m, filename, sourceFile)
+            });
+            continue;
+        }
+
         if (!m.name || !m.name.text) continue;
         var memberName = m.name.text;
         if (!Object.prototype.hasOwnProperty.call(targetMembers, memberName)) targetMembers[memberName] = [];
@@ -277,6 +293,18 @@ function mergeInterface(node, result, filename, sourceFile) {
                 doc: jsDocText(m, sourceFile),
                 location: getLocation(m, filename, sourceFile)
             });
+        } else if (m.kind === ts.SyntaxKind.GetAccessor) {
+            // Getter-only or getter+setter pairs (e.g. `get location(): Location`).
+            // Only the getter carries the readable type; setters are skipped.
+            if (!Object.prototype.hasOwnProperty.call(targetMembers, memberName) || targetMembers[memberName].length === 0) {
+                targetMembers[memberName].push({
+                    kind: 'property',
+                    type: typeName(m.type, result),
+                    optional: false,
+                    doc: jsDocText(m, sourceFile),
+                    location: getLocation(m, filename, sourceFile)
+                });
+            }
         }
     }
 }
@@ -320,6 +348,27 @@ function collectFunction(node, result, filename, sourceFile) {
     result.functions[name].push({ kind: 'method', params: extractParams(node.parameters, result), returns: typeName(node.type, result), doc: jsDocText(node, sourceFile), location: getLocation(node, filename, sourceFile) });
 }
 
+function collectTypeAlias(node, result, filename, sourceFile) {
+    if (!node.name || !node.name.text) return;
+    var name = node.name.text;
+    var type = node.type;
+    if (!type) return;
+    if (Object.prototype.hasOwnProperty.call(result.interfaces, name)) return; // real interface wins
+
+    if (type.kind === ts.SyntaxKind.TypeLiteral) {
+        // type Foo = { ... } — treat as an inline interface
+        mergeInterface({ name: { text: name }, members: type.members, heritageClauses: null }, result, filename, sourceFile);
+    } else if (type.kind === ts.SyntaxKind.TypeReference) {
+        // type Foo = Bar — create a transparent alias interface that extends Bar
+        var baseType = typeName(type, result);
+        if (baseType && baseType !== 'any' && baseType !== 'unknown') {
+            result.interfaces[name] = { location: getLocation(node, filename, sourceFile), extends: [baseType], members: Object.create(null) };
+        }
+    }
+    // Union/intersection aliases (e.g. type BodyInit = Blob | string) are not modelled as interfaces
+    // because we can't pick a single concrete receiver type for member resolution.
+}
+
 function getLocation(node, filename, sourceFile) {
     if (!node || !filename || !sourceFile) return null;
     var targetNode = node;
@@ -351,15 +400,48 @@ function typeName(node, result) {
         case ts.SyntaxKind.BooleanKeyword: return 'boolean';
         case ts.SyntaxKind.VoidKeyword: return 'void';
         case ts.SyntaxKind.AnyKeyword: return 'any';
-        case ts.SyntaxKind.TypeReference: return node.typeName ? (node.typeName.text || 'unknown') : 'unknown';
+        case ts.SyntaxKind.NeverKeyword: return 'never';
+        case ts.SyntaxKind.BigIntKeyword: return 'bigint';
+        case ts.SyntaxKind.UnknownKeyword: return 'unknown';
+        case ts.SyntaxKind.UndefinedKeyword: return 'undefined';
+        case ts.SyntaxKind.NullKeyword: return 'null';
+        case ts.SyntaxKind.ObjectKeyword: return 'object';
+        case ts.SyntaxKind.SymbolKeyword: return 'symbol';
+        case ts.SyntaxKind.TypeReference:
+            if (!node.typeName) return 'unknown';
+            // QualifiedName (A.B) — use only the rightmost identifier so it matches our interface table keys.
+            if (node.typeName.kind === ts.SyntaxKind.QualifiedName) {
+                return (node.typeName.right && node.typeName.right.text) || 'unknown';
+            }
+            return node.typeName.text || 'unknown';
         case ts.SyntaxKind.ArrayType: return typeName(node.elementType, result) + '[]';
         case ts.SyntaxKind.UnionType: return node.types ? node.types.map(function(t) { return typeName(t, result); }).join('|') : 'any';
         case ts.SyntaxKind.IntersectionType: return node.types ? node.types.map(function(t) { return typeName(t, result); }).join('&') : 'any';
         case ts.SyntaxKind.ParenthesizedType: return typeName(node.type, result);
         case ts.SyntaxKind.TypeLiteral: return 'object';
         case ts.SyntaxKind.FunctionType: return 'Function';
+        case ts.SyntaxKind.ConstructorType: return 'Function';
         case ts.SyntaxKind.TupleType: return 'any[]';
         case ts.SyntaxKind.ThisType: return 'this';
+        case ts.SyntaxKind.LiteralType:
+            if (node.literal) {
+                var lk = node.literal.kind;
+                if (lk === ts.SyntaxKind.StringLiteral || lk === ts.SyntaxKind.NoSubstitutionTemplateLiteral) return 'string';
+                if (lk === ts.SyntaxKind.NumericLiteral) return 'number';
+                if (lk === ts.SyntaxKind.BigIntLiteral) return 'bigint';
+                if (lk === ts.SyntaxKind.TrueKeyword || lk === ts.SyntaxKind.FalseKeyword) return 'boolean';
+                if (lk === ts.SyntaxKind.NullKeyword) return 'null';
+            }
+            return 'any';
+        case ts.SyntaxKind.TemplateLiteralType: return 'string';
+        case ts.SyntaxKind.TypeOperator:
+            // `readonly T` → unwrap to T; `keyof T` / `unique symbol` → any
+            if (node.operator === ts.SyntaxKind.ReadonlyKeyword) return typeName(node.type, result);
+            return 'any';
+        case ts.SyntaxKind.TypePredicate: // `x is T` — returns boolean at runtime; the narrowed type is a TypeScript-only concept
+            return 'boolean';
+        case ts.SyntaxKind.IndexedAccessType: return 'any'; // T[K]
+        case ts.SyntaxKind.MappedType: return 'object';    // { [K in T]: V }
         case ts.SyntaxKind.Identifier:
             var name = node.text;
             if (result && result.variables[name]) {

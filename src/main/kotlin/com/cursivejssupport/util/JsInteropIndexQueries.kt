@@ -12,9 +12,21 @@ object JsInteropIndexQueries {
         if (!index.isLoaded || !rest.contains('.')) return false
         val parts = rest.split('.').map { it.trim() }.filter { it.isNotEmpty() }
         if (parts.size < 2) return false
-        val parentType = index.resolveJsChainType(parts.dropLast(1)) ?: return false
-        val last = parts.last()
-        return index.resolveMember(parentType, last) != null
+
+        // Start from the global named by the first segment.
+        var currentType = index.resolveGlobalType(parts[0]) ?: return false
+
+        // Walk intermediate segments. Each must be a property — methods cannot be chained through
+        // with dot syntax in ClojureScript (js/document.getSelection.removeAllRanges is wrong;
+        // (.. js/document getSelection removeAllRanges) is the correct form).
+        for (part in parts.drop(1).dropLast(1)) {
+            val member = index.resolveMember(currentType, part)?.first ?: return false
+            if (member.kind == "method") return false
+            currentType = index.canonicalType(member.type)
+            if (currentType.isEmpty() || currentType == "any" || currentType == "void") return false
+        }
+
+        return index.resolveMember(currentType, parts.last()) != null
     }
 
     /** Full editor symbol text and optional PSI namespace/name (e.g. `js/document.x` or ns=`js`, name=`document.x`). */
