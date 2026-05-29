@@ -80,6 +80,39 @@ object JsInteropNavigation {
         return "id:${System.identityHashCode(element)}"
     }
 
+    /**
+     * If [symbol] is a step at position ≥ 2 inside `(.. root step1 step2 ...)`, walks the
+     * prior chain through [index] and returns `(receiverType, memberName)` for this step.
+     * Returns null when the symbol is not a chain step or the chain cannot be resolved.
+     */
+    fun dotDotChainStepContext(symbol: PsiElement, index: JsSymbolIndex): Pair<String, String>? {
+        val sym = JsInteropPsi.enclosingEditorSymbol(symbol) ?: symbol
+        val list = sym.parent as? ClList ?: return null
+        val children = list.children.filter {
+            it !is PsiWhiteSpace && it !is PsiComment && it.text != "(" && it.text != ")"
+        }
+        if (children.isEmpty() || children[0].text != "..") return null
+        val rootElement = children.getOrNull(1) ?: return null
+        val symOffset = sym.textOffset
+        if (symOffset <= rootElement.textOffset) return null  // ".." or root: handled by other branches
+
+        var currentType = JsResolveUtil.resolveType(rootElement, index) ?: return null
+
+        for (step in children.drop(2)) {
+            if (step.textOffset >= symOffset) break
+            val stepText = step.text ?: continue
+            val mn = if (stepText.startsWith("-")) stepText.drop(1) else stepText
+            val member = index.resolveMember(currentType, mn)?.first ?: return null
+            val raw = if (member.kind == "method") member.returns else member.type
+            currentType = index.canonicalType(raw)
+            if (currentType.isEmpty() || currentType == "any" || currentType == "void") return null
+        }
+
+        val symText = sym.text ?: return null
+        val memberName = if (symText.startsWith("-")) symText.drop(1) else symText
+        return Pair(currentType, memberName)
+    }
+
     private fun resolveGotoTargetsRaw(
         sourceElement: PsiElement,
         project: Project,
@@ -190,6 +223,13 @@ object JsInteropNavigation {
             if (targets != null) return targets
         }
 
+        // `..` chain step: bare method/property name inside (.. root step1 step2 ...)
+        dotDotChainStepContext(sourceElement, index)?.let { (receiverType, memberName) ->
+            val targets = index.getMemberPsiElements(project, receiverType, memberName)
+                ?: index.getAnyMemberPsiElements(project, memberName, preferredReceiverType = receiverType)
+            if (targets != null) return targets
+        }
+
         return null
     }
 
@@ -266,6 +306,38 @@ object JsInteropNavigation {
         val namespace = rawNamespace
         
         val index = JsSymbolIndex.getInstance()
+
+        // `..` chain step — bare method/property step at position ≥ 2 in (.. root ...).
+        // Must run before the `when` block because the bare name matches none of the other branches.
+        if (!text.startsWith(".") && '/' !in text && text != "js") {
+            val sym = JsInteropPsi.enclosingEditorSymbol(symbol) ?: symbol
+            val list = sym.parent as? ClList
+            if (list != null) {
+                val ch = list.children.filter {
+                    it !is PsiWhiteSpace && it !is PsiComment && it.text != "(" && it.text != ")"
+                }
+                val rootEl = ch.getOrNull(1)
+                if (ch.isNotEmpty() && ch[0].text == ".." && rootEl != null && sym.textOffset > rootEl.textOffset) {
+                    val chain = dotDotChainStepContext(symbol, index)
+                    return if (chain != null) {
+                        val (receiverType, memberName) = chain
+                        val resolvedMember = index.resolveMember(receiverType, memberName)
+                        val member = resolvedMember?.first
+                        val phys = member?.let { firstMemberPsi(project, index, receiverType, memberName) }
+                        JsSymbolPsiElement(
+                            symbol.manager, symbol.language, memberName,
+                            resolvedMember?.declaringType ?: receiverType,
+                            member?.doc,
+                            member = member,
+                            navigationTarget = phys,
+                        )
+                    } else {
+                        // Chain not fully resolvable — return soft element to suppress "cannot be resolved"
+                        JsSymbolPsiElement(symbol.manager, symbol.language, text, null, null)
+                    }
+                }
+            }
+        }
 
         return when {
             text == "js" ->

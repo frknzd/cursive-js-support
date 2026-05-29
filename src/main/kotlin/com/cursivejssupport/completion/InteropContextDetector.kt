@@ -36,6 +36,7 @@ object InteropContextDetector {
         // 2. Otherwise look at the identifier-like token immediately to the left of the caret.
         val tokenStart = scanTokenStart(doc, caret)
         if (tokenStart == caret) {
+            detectDotDotForm(doc, tokenStart, caret)?.let { return it }
             return if (aliases.isNotEmpty()) {
                 InteropCompletionContext.NpmAliasName(aliases, "", caret)
             } else {
@@ -44,6 +45,7 @@ object InteropContextDetector {
         }
         val token = doc.subSequence(tokenStart, caret).toString().stripCompletionDummy()
         if (token.isEmpty()) {
+            detectDotDotForm(doc, tokenStart, caret)?.let { return it }
             return if (aliases.isNotEmpty()) {
                 InteropCompletionContext.NpmAliasName(aliases, "", caret)
             } else {
@@ -51,6 +53,7 @@ object InteropContextDetector {
             }
         }
 
+        detectDotDotForm(doc, tokenStart, caret)?.let { return it }
         return classifyToken(token, tokenStart, aliases, knownGoogNamespaces)
     }
 
@@ -260,6 +263,73 @@ object InteropContextDetector {
 
     private fun isTokenChar(c: Char): Boolean =
         c.isLetterOrDigit() || c == '-' || c == '_' || c == '$' || c == '.' || c == '/' || c == '?' || c == '!' || c == '*' || c == '+' || c == '='
+
+    /**
+     * Detects whether [tokenStart] is a chain-step position inside a `(.. root ...)` form.
+     *
+     * Scans backward from [tokenStart] collecting simple tokens and skipping nested forms.
+     * Returns a [InteropCompletionContext.DotDotForm] when:
+     * - the first token found is exactly `..` (the form head), AND
+     * - at least one prior element (the root) has already been typed.
+     *
+     * Returns `null` when the user is at the root position (nothing before the `..` found) or
+     * when the enclosing form's head is not `..`.
+     */
+    private fun detectDotDotForm(
+        doc: CharSequence,
+        tokenStart: Int,
+        caret: Int,
+    ): InteropCompletionContext.DotDotForm? {
+        val limit = (tokenStart - MAX_SCAN).coerceAtLeast(0)
+        var i = tokenStart
+        val tokens = ArrayDeque<String>()
+
+        outer@ while (i > limit) {
+            // Skip whitespace
+            while (i > limit && doc[i - 1].isWhitespace()) i--
+            if (i <= limit) break
+
+            when {
+                doc[i - 1] == '(' -> break  // found enclosing open-paren
+                doc[i - 1] == ')' || doc[i - 1] == ']' || doc[i - 1] == '}' -> {
+                    val matchOpen = skipFormBackward(doc, i - 1, limit)
+                    if (matchOpen < limit) break@outer
+                    tokens.addFirst(doc.subSequence(matchOpen, i).toString())
+                    i = matchOpen
+                }
+                isTokenChar(doc[i - 1]) -> {
+                    val end = i
+                    while (i > limit && isTokenChar(doc[i - 1])) i--
+                    tokens.addFirst(doc.subSequence(i, end).toString())
+                }
+                else -> break  // unrecognised char (`;`, `"`, `@`, `#`, …): bail out
+            }
+        }
+
+        if (tokens.isEmpty() || tokens.first() != "..") return null
+        val chain = tokens.drop(1)
+        if (chain.isEmpty()) return null  // user is at root position; existing logic handles it
+
+        val prefix = doc.subSequence(tokenStart, caret).toString().stripCompletionDummy()
+        return InteropCompletionContext.DotDotForm(
+            priorChain = chain,
+            prefix = prefix,
+            replacementStart = tokenStart,
+        )
+    }
+
+    /** Finds the matching open-delimiter for a close-delimiter at [closePos], scanning backward. */
+    private fun skipFormBackward(doc: CharSequence, closePos: Int, limit: Int): Int {
+        val closeChar = doc[closePos]
+        val openChar = when (closeChar) { ')' -> '('; ']' -> '['; '}' -> '{'; else -> return closePos }
+        var depth = 1
+        var i = closePos - 1
+        while (i >= limit && depth > 0) {
+            when (doc[i]) { closeChar -> depth++; openChar -> { depth--; if (depth == 0) return i } }
+            i--
+        }
+        return limit - 1
+    }
 
     private fun String.stripCompletionDummy(): String =
         this.replace(CompletionUtilCore.DUMMY_IDENTIFIER_TRIMMED, "")

@@ -328,4 +328,75 @@ class InteropContextDetectorTest {
     @Test fun `shouldOpen does not fire for bare goog without index`() {
         assertFalse(InteropAutoPopupHandler.shouldOpen("(goog", 5, knownGoogNamespaces = emptySet()))
     }
+
+    // ─── DotDotForm ──────────────────────────────────────────────────────────
+
+    @Test fun `dot-dot form empty prefix at step-1 position`() {
+        val ctx = detect("(.. js/document ")
+        assertTrue(ctx is InteropCompletionContext.DotDotForm)
+        ctx as InteropCompletionContext.DotDotForm
+        assertEquals(listOf("js/document"), ctx.priorChain)
+        assertEquals("", ctx.prefix)
+    }
+
+    @Test fun `dot-dot form partial method prefix`() {
+        val ctx = detect("(.. js/document cre")
+        assertTrue(ctx is InteropCompletionContext.DotDotForm)
+        ctx as InteropCompletionContext.DotDotForm
+        assertEquals(listOf("js/document"), ctx.priorChain)
+        assertEquals("cre", ctx.prefix)
+        assertEquals("(.. js/document ".length, ctx.replacementStart)
+    }
+
+    @Test fun `dot-dot form two prior steps empty prefix`() {
+        val ctx = detect("(.. js/document createRange ")
+        assertTrue(ctx is InteropCompletionContext.DotDotForm)
+        ctx as InteropCompletionContext.DotDotForm
+        assertEquals(listOf("js/document", "createRange"), ctx.priorChain)
+        assertEquals("", ctx.prefix)
+    }
+
+    @Test fun `dot-dot form property prefix with dash`() {
+        val ctx = detect("(.. js/document -inn")
+        assertTrue(ctx is InteropCompletionContext.DotDotForm)
+        ctx as InteropCompletionContext.DotDotForm
+        assertEquals(listOf("js/document"), ctx.priorChain)
+        assertEquals("-inn", ctx.prefix)
+    }
+
+    @Test fun `dot-dot form npm alias root`() {
+        val ctx = detect("(.. R/Component ")
+        assertTrue(ctx is InteropCompletionContext.DotDotForm)
+        ctx as InteropCompletionContext.DotDotForm
+        assertEquals(listOf("R/Component"), ctx.priorChain)
+        assertEquals("", ctx.prefix)
+    }
+
+    @Test fun `dot-dot form three steps partial`() {
+        val ctx = detect("(.. js/document body firstChild nodeV")
+        assertTrue(ctx is InteropCompletionContext.DotDotForm)
+        ctx as InteropCompletionContext.DotDotForm
+        assertEquals(listOf("js/document", "body", "firstChild"), ctx.priorChain)
+        assertEquals("nodeV", ctx.prefix)
+    }
+
+    @Test fun `dot-dot form at root position returns non-DotDotForm`() {
+        // caret is right after `..` — position 0, the root.  Existing logic handles it.
+        val ctx = detect("(.. ")
+        assertFalse(ctx is InteropCompletionContext.DotDotForm)
+    }
+
+    @Test fun `dot-dot form does not fire outside double-dot forms`() {
+        // `do` form: not a `..`
+        val ctx = detect("(do js/document ")
+        assertFalse(ctx is InteropCompletionContext.DotDotForm)
+    }
+
+    @Test fun `dot-dot form nested inside outer list`() {
+        val ctx = detect("(let [x 1] (.. js/document ")
+        assertTrue(ctx is InteropCompletionContext.DotDotForm)
+        ctx as InteropCompletionContext.DotDotForm
+        assertEquals(listOf("js/document"), ctx.priorChain)
+        assertEquals("", ctx.prefix)
+    }
 }

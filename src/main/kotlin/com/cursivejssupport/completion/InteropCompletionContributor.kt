@@ -59,10 +59,17 @@ class InteropCompletionContributor : CompletionContributor() {
 
             val context = InteropContextDetector.detect(document.charsSequence, caret, aliases, knownGoogNamespaces)
             if (context is InteropCompletionContext.None) return
-            
-            // Set prefix matcher. If prefix is empty, we still want to match everything.
-            val matcher = PlainPrefixMatcher(context.prefix,false)
+
+            val matcher = PlainPrefixMatcher(context.prefix, false)
             val result = baseResult.withPrefixMatcher(matcher)
+
+            if (context is InteropCompletionContext.NsRequirePackage) {
+                emitNpmPackages(context, file, parameters, result)
+                return
+            }
+
+            val listAroundCaret = enclosingClList(parameters.position)
+            InteropCompletionItems.emit(context, file, index, result, listAroundCaret)
         }
 
         private fun emitNpmPackages(

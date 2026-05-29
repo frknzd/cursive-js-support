@@ -25,6 +25,8 @@ import cursive.psi.api.ClList
  * `)` if the user is in head position and the lookup is a function/method.
  */
 import com.cursivejssupport.npm.IntellijNpmResolutionService
+import com.cursivejssupport.npm.NsAliasResolver
+import com.cursivejssupport.util.JsInteropChain
 import com.intellij.openapi.components.service
 import com.intellij.openapi.components.serviceOrNull
 import com.intellij.lang.javascript.psi.JSNamedElement
@@ -50,6 +52,7 @@ object InteropCompletionItems {
         is InteropCompletionContext.NpmAliasExportMember -> emitNpmAliasExportMembers(context, file, index, result)
         is InteropCompletionContext.GoogNamespaceRequire -> emitGoogNamespaces(context, index, result)
         is InteropCompletionContext.GoogNamespaceName -> emitGoogNamespaceNames(context, index, result)
+        is InteropCompletionContext.DotDotForm -> emitDotDotMembers(context, file, index, result)
     }
 
     private fun emitNpmAliasNames(context: InteropCompletionContext.NpmAliasName, result: CompletionResultSet): Int {
@@ -277,6 +280,59 @@ object InteropCompletionItems {
         return n
     }
 
+    private fun emitDotDotMembers(
+        context: InteropCompletionContext.DotDotForm,
+        file: PsiFile,
+        index: JsSymbolIndex,
+        result: CompletionResultSet,
+    ): Int {
+        if (!index.isLoaded) return 0
+        if (context.priorChain.isEmpty()) return 0
+
+        var currentType = resolveRootToken(context.priorChain[0], file, index) ?: return 0
+
+        for (step in context.priorChain.drop(1)) {
+            val memberName = if (step.startsWith("-")) step.drop(1) else step
+            val member = index.resolveMember(currentType, memberName)?.first ?: return 0
+            val raw = if (member.kind == "method") member.returns else member.type
+            val next = index.canonicalType(raw)
+            if (next.isEmpty() || next == "any" || next == "void" || next == "undefined") return 0
+            currentType = next
+        }
+
+        val members = index.resolveMembers(currentType)
+        var n = 0
+        for ((memberName, resolved) in members) {
+            val first = resolved.overloads.firstOrNull() ?: continue
+            if (first.kind != "method" && first.kind != "property") continue
+            result.addElement(dotDotMemberLookup(memberName, resolved.declaringType, first))
+            n++
+        }
+        return n
+    }
+
+    /**
+     * Resolves the type of the root element of a `..` form from its document token text.
+     * Handles `js/Global`, `js/global.member`, `alias/Export` (npm), and bare JS globals.
+     */
+    private fun resolveRootToken(token: String, file: PsiFile, index: JsSymbolIndex): String? {
+        if (token.startsWith("js/")) {
+            val segments = JsInteropChain.segmentsFromFullText(token)
+            if (!segments.isNullOrEmpty()) return index.resolveJsChainType(segments)
+            return null
+        }
+        val slashIdx = token.indexOf('/')
+        if (slashIdx > 0) {
+            val aliases = NsAliasResolver.resolveAliases(file)
+            val alias = token.substring(0, slashIdx)
+            val exportName = token.substring(slashIdx + 1)
+            val binding = aliases[alias] ?: return null
+            val t = index.resolveNpmExportType(binding.packageName, exportName) ?: return null
+            return index.canonicalType(t)
+        }
+        return index.resolveGlobalType(token)?.let { index.canonicalType(it) }
+    }
+
     // ─── Lookup builders ────────────────────────────────────────────────────
 
     private fun globalVariableLookup(name: String, type: String): LookupElement =
@@ -315,6 +371,31 @@ object InteropCompletionItems {
             .withIcon(JsInteropCompletionIcons.forJsMemberKind(member.kind))
         if (sig != null) builder = builder.withTailText(sig, true)
         if (presentable != memberName) builder = builder.withLookupString(presentable)
+        return builder
+    }
+
+    /**
+     * Lookup element for a `..` chain step. Properties are emitted as `-propName` so that a
+     * typed `-` prefix is matched by [PlainPrefixMatcher]. Methods are emitted as plain names.
+     */
+    private fun dotDotMemberLookup(memberName: String, declaringType: String?, member: JsMember): LookupElement {
+        val isProperty = member.kind == "property"
+        val lookupString = if (isProperty) "-$memberName" else memberName
+        val sig = if (member.kind == "method") {
+            "(" + member.params.joinToString(", ") { p ->
+                when {
+                    p.rest -> "...${p.name}: ${p.type}"
+                    p.optional -> "${p.name}?: ${p.type}"
+                    else -> "${p.name}: ${p.type}"
+                }
+            } + ")"
+        } else null
+        val typeText = declaringType ?: if (member.kind == "method") member.returns else member.type
+        var builder = LookupElementBuilder.create(lookupString)
+            .withPresentableText(lookupString)
+            .withTypeText(typeText)
+            .withIcon(JsInteropCompletionIcons.forJsMemberKind(member.kind))
+        if (sig != null) builder = builder.withTailText(sig, true)
         return builder
     }
 

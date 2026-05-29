@@ -8,7 +8,9 @@ import com.intellij.codeInsight.daemon.impl.HighlightInfo
 import com.intellij.codeInsight.daemon.impl.HighlightInfoFilter
 import com.intellij.openapi.editor.Document
 import com.intellij.openapi.util.TextRange
+import com.intellij.psi.PsiComment
 import com.intellij.psi.PsiFile
+import com.intellij.psi.PsiWhiteSpace
 import com.intellij.psi.util.PsiTreeUtil
 import cursive.psi.api.ClList
 import cursive.psi.impl.symbols.ClEditorSymbol
@@ -111,6 +113,16 @@ class JsInteropHighlightFilter : HighlightInfoFilter {
                 if (full.isNotEmpty() && JsInteropIndexQueries.isResolvableJsInteropSymbol(index, full, enclosing.namespace, enclosing.name)) {
                     return false
                 }
+            }
+        }
+
+        // 3d. Bare method/property name inside (.. root step1 step2 ...) chain forms.
+        // The .. macro is exclusively JS interop in ClojureScript — bare names here are JS members, not Clojure vars.
+        if (!text.startsWith(".") && '/' !in text) {
+            val elementAtOffset = file.findElementAt(start)
+            val sym = PsiTreeUtil.getParentOfType(elementAtOffset, ClEditorSymbol::class.java, false)
+            if (sym != null && isInsideDotDotStep(sym)) {
+                return false
             }
         }
 
@@ -224,6 +236,16 @@ class JsInteropHighlightFilter : HighlightInfoFilter {
         if (Companion.looksLikeJsTrailingMemberInSequence(document.charsSequence, start)) return true
 
         return false
+    }
+
+    private fun isInsideDotDotStep(symbol: ClEditorSymbol): Boolean {
+        val list = symbol.parent as? ClList ?: return false
+        val children = list.children.filter {
+            it.text != "(" && it.text != ")" && it !is PsiWhiteSpace && it !is PsiComment
+        }
+        if (children.isEmpty() || children[0].text != "..") return false
+        val rootElement = children.getOrNull(1) ?: return false
+        return symbol.textOffset > rootElement.textOffset
     }
 
     companion object {

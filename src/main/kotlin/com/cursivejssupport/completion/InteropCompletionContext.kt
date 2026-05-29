@@ -124,4 +124,21 @@ sealed interface InteropCompletionContext {
         override val prefix: String,
         override val replacementStart: Int,
     ) : InteropCompletionContext
+
+    /**
+     * Inside `(.. root step1 step2 <prefix>)` — a Clojure `..` chain-access form.
+     *
+     * [priorChain] holds all complete tokens between `..` and the caret:
+     * - index 0 is the root (`js/document`, `alias/Export`, bare global)
+     * - indices 1+ are the prior chain steps (raw token text: `method`, `-property`)
+     *
+     * [prefix] is the partial step text as typed: bare for methods (`"cre"`), with a
+     * leading `-` for properties (`"-inn"`). Property lookup strings are also prefixed
+     * with `-` so `PlainPrefixMatcher` filters correctly against them.
+     */
+    data class DotDotForm(
+        val priorChain: List<String>,
+        override val prefix: String,
+        override val replacementStart: Int,
+    ) : InteropCompletionContext
 }

@@ -44,6 +44,12 @@ object InteropDocResolver {
         val name = symbol.name ?: symbol.text?.trim().orEmpty()
         if (name.isEmpty()) return InteropDocSubject.Unknown
 
+        // Bare names inside (.. root step1 step2 ...) chains — resolve via type chain walking.
+        if (namespace == null && !name.startsWith(".")) {
+            val chainSubject = resolveFromDotDotChain(symbol, name, index)
+            if (chainSubject != InteropDocSubject.Unknown) return chainSubject
+        }
+
         val receiverType = if (name.startsWith(".")) {
             val receiver = findReceiver(symbol)
             if (receiver != null) JsResolveUtil.resolveType(receiver, index) else null
@@ -218,6 +224,47 @@ object InteropDocResolver {
     }
 
     // ─── helpers ───────────────────────────────────────────────────────────
+
+    /**
+     * Resolves hover docs for a bare step inside `(.. root step1 step2 ...)` by walking the
+     * prior chain to determine the receiver type, then looking up the member on that type.
+     */
+    private fun resolveFromDotDotChain(
+        symbol: ClEditorSymbol,
+        name: String,
+        index: JsSymbolIndex,
+    ): InteropDocSubject {
+        val list = symbol.parent as? ClList ?: return InteropDocSubject.Unknown
+        val children = list.children.filter {
+            it !is PsiWhiteSpace && it !is PsiComment && it.text != "(" && it.text != ")"
+        }
+        if (children.isEmpty() || children[0].text != "..") return InteropDocSubject.Unknown
+        val rootElement = children.getOrNull(1) ?: return InteropDocSubject.Unknown
+        if (symbol.textOffset <= rootElement.textOffset) return InteropDocSubject.Unknown
+
+        var currentType = JsResolveUtil.resolveType(rootElement, index) ?: return InteropDocSubject.Unknown
+        val symOffset = symbol.textOffset
+        for (step in children.drop(2)) {
+            if (step.textOffset >= symOffset) break
+            val stepText = step.text ?: continue
+            val mn = if (stepText.startsWith("-")) stepText.drop(1) else stepText
+            val member = index.resolveMember(currentType, mn)?.first ?: return InteropDocSubject.Unknown
+            val raw = if (member.kind == "method") member.returns else member.type
+            currentType = index.canonicalType(raw)
+            if (currentType.isEmpty() || currentType == "any" || currentType == "void") return InteropDocSubject.Unknown
+        }
+
+        val isProperty = name.startsWith("-")
+        val memberName = if (isProperty) name.drop(1) else name
+        val hit = pickMember(currentType, memberName, asProperty = isProperty, index)
+            ?: return InteropDocSubject.Unknown
+        return InteropDocSubject.Member(
+            name = memberName,
+            asProperty = isProperty,
+            declaringType = hit.first,
+            member = hit.second,
+        )
+    }
 
     /**
      * Walks past the open paren / whitespace to find the second child of the enclosing list —

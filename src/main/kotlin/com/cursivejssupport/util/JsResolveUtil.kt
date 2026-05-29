@@ -140,6 +140,24 @@ object JsResolveUtil {
                         if (obj != null) return resolveType(obj, index, depth + 1)
                     }
                 }
+                // `..` chain: (.. root step1 step2 ...) — resolve to the final member's type
+                if (head is ClEditorSymbol && head.text == "..") {
+                    val children = element.children.filter {
+                        it !is PsiWhiteSpace && it !is PsiComment && it.text != "(" && it.text != ")"
+                    }
+                    // children[0] = "..", children[1] = root, children[2..] = steps
+                    val root = children.getOrNull(1) ?: return null
+                    var currentType = resolveType(root, index, depth + 1) ?: return null
+                    for (step in children.drop(2)) {
+                        val stepText = step.text ?: continue
+                        val memberName = if (stepText.startsWith("-")) stepText.drop(1) else stepText
+                        val member = index.resolveMember(currentType, memberName)?.first ?: return null
+                        val raw = if (member.kind == "method") member.returns else member.type
+                        currentType = index.canonicalType(raw)
+                        if (currentType.isEmpty() || currentType == "any" || currentType == "void") return null
+                    }
+                    return currentType
+                }
                 // Method call: (.method receiver ...)
                 if (head is ClEditorSymbol && head.text.startsWith(".")) {
                     val memberName = head.text.removePrefix(".").removePrefix("-")
