@@ -163,6 +163,53 @@ class DtsParserTest {
     }
 
     @Test
+    fun parsesGenericsTypeParamsAliasesAndJsDocTags() {
+        val nodeExecutable = DtsParser.findNodeExecutable()
+        assumeNotNull(nodeExecutable)
+
+        DtsParser(nodeExecutable!!).use { parser ->
+            val dtsContent = """
+                interface NodeListLike<T> {
+                    item(index: number): T;
+                }
+                interface DocLike {
+                    /**
+                     * Fetches things.
+                     * @param input the request input
+                     * @deprecated use fetchAll instead
+                     * @example doc.fetch("x")
+                     */
+                    fetch(input: string): Promise<Response>;
+                    queryAll(selectors: string): NodeListLike<Element>;
+                    kids: Element[];
+                }
+                type BodyLike = Blob | string;
+            """.trimIndent()
+
+            val symbols = parser.parse(mapOf("generics.d.ts" to dtsContent))
+
+            // Generic instantiations survive extraction.
+            val doc = symbols.interfaces["DocLike"]!!
+            assertEquals("Promise<Response>", doc.members["fetch"]?.first()?.returns)
+            assertEquals("NodeListLike<Element>", doc.members["queryAll"]?.first()?.returns)
+            assertEquals("Element[]", doc.members["kids"]?.first()?.type)
+
+            // Type parameters are captured.
+            assertEquals(listOf("T"), symbols.interfaces["NodeListLike"]?.typeParams)
+
+            // Union aliases land in the aliases map.
+            assertEquals("Blob|string", symbols.aliases["BodyLike"])
+
+            // JSDoc tags keep their names (and @param keeps the parameter name).
+            val docText = doc.members["fetch"]?.first()?.doc.orEmpty()
+            assertTrue("doc should contain body text: $docText", docText.contains("Fetches things."))
+            assertTrue("doc should contain @param with name: $docText", docText.contains("@param input the request input"))
+            assertTrue("doc should contain @deprecated: $docText", docText.contains("@deprecated use fetchAll instead"))
+            assertTrue("doc should contain @example: $docText", docText.contains("@example doc.fetch(\"x\")"))
+        }
+    }
+
+    @Test
     fun parsesExportEquals() {
         val nodeExecutable = DtsParser.findNodeExecutable()
         assumeNotNull(nodeExecutable)

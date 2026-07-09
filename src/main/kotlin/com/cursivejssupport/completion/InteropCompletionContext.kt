@@ -1,6 +1,7 @@
 package com.cursivejssupport.completion
 
 import com.cursivejssupport.npm.NpmBinding
+import com.cursivejssupport.util.ChainKind
 
 /**
  * The single, document-derived description of "what is the user trying to complete?".
@@ -126,17 +127,20 @@ sealed interface InteropCompletionContext {
     ) : InteropCompletionContext
 
     /**
-     * Inside `(.. root step1 step2 <prefix>)` — a Clojure `..` chain-access form.
+     * Completing a member-access step inside a chain-macro form — `(.. root step1 <prefix>)`,
+     * `(-> root .step .<prefix>)`, `(doto root (.<prefix>))`, …
      *
-     * [priorChain] holds all complete tokens between `..` and the caret:
+     * [priorChain] holds all complete tokens between the macro head and the caret's step:
      * - index 0 is the root (`js/document`, `alias/Export`, bare global)
-     * - indices 1+ are the prior chain steps (raw token text: `method`, `-property`)
+     * - indices 1+ are the prior steps (raw token text: `method`, `-property`, `.method`,
+     *   or a whole list step like `(.setAttribute "x" "1")`)
      *
-     * [prefix] is the partial step text as typed: bare for methods (`"cre"`), with a
-     * leading `-` for properties (`"-inn"`). Property lookup strings are also prefixed
-     * with `-` so `PlainPrefixMatcher` filters correctly against them.
+     * [prefix] is the partial step text as typed — bare / `-`-prefixed for `..` (`"cre"`,
+     * `"-inn"`), dot-prefixed for the threading macros (`".cre"`, `".-inn"`). Lookup strings
+     * mirror the same shape so `PlainPrefixMatcher` filters correctly against them.
      */
-    data class DotDotForm(
+    data class ChainStepForm(
+        val kind: ChainKind,
         val priorChain: List<String>,
         override val prefix: String,
         override val replacementStart: Int,

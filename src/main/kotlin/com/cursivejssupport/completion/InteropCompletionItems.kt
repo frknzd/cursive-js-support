@@ -26,6 +26,9 @@ import cursive.psi.api.ClList
  */
 import com.cursivejssupport.npm.IntellijNpmResolutionService
 import com.cursivejssupport.npm.NsAliasResolver
+import com.cursivejssupport.types.JsTypeSources
+import com.cursivejssupport.util.ChainKind
+import com.cursivejssupport.util.InteropChainCore
 import com.cursivejssupport.util.JsInteropChain
 import com.intellij.openapi.components.service
 import com.intellij.openapi.components.serviceOrNull
@@ -52,7 +55,7 @@ object InteropCompletionItems {
         is InteropCompletionContext.NpmAliasExportMember -> emitNpmAliasExportMembers(context, file, index, result)
         is InteropCompletionContext.GoogNamespaceRequire -> emitGoogNamespaces(context, index, result)
         is InteropCompletionContext.GoogNamespaceName -> emitGoogNamespaceNames(context, index, result)
-        is InteropCompletionContext.DotDotForm -> emitDotDotMembers(context, file, index, result)
+        is InteropCompletionContext.ChainStepForm -> emitChainStepMembers(context, file, index, result)
     }
 
     private fun emitNpmAliasNames(context: InteropCompletionContext.NpmAliasName, result: CompletionResultSet): Int {
@@ -232,22 +235,26 @@ object InteropCompletionItems {
         index: JsSymbolIndex,
         result: CompletionResultSet,
     ): Int {
-        var n = 0
-        val service = file.project.serviceOrNull<IntellijNpmResolutionService>()
-        if (service != null) {
-            val exports = service.resolveExports(file, context.packageName)
-            if (exports.isNotEmpty()) {
-                // Here we would ideally evaluate the JSType of the specific export and its members.
-                // For now, if IntelliJ resolves it, we can fallback to the index if we don't have JS type eval here,
-                // or just skip because we only have PsiElement for the exports, not their deeply nested types.
+        // Prefer IntelliJ's own type evaluation when the JavaScript plugin is available — it
+        // understands packages whose typings the bundled parser can't fully digest.
+        val descriptors = JsTypeSources.npmExportMembers(
+            file, context.packageName, context.exportName, context.receiverSegments,
+        )
+        if (!descriptors.isNullOrEmpty()) {
+            var n = 0
+            for (d in descriptors) {
+                val member = JsMember(kind = d.kind, params = d.params, returns = d.returns, type = d.type, doc = d.doc)
+                result.addElement(memberLookup(d.name, context.packageName, member, dotForm = false))
+                n++
             }
+            return n
         }
 
         if (!index.isLoaded) return 0
         var receiverType = index.resolveNpmExportType(context.packageName, context.exportName) ?: return 0
         for (segment in context.receiverSegments) {
             val member = index.resolveMember(receiverType, segment)?.first ?: return 0
-            receiverType = if (member.kind == "method") member.returns else member.type
+            receiverType = index.memberValueTypeName(member).ifEmpty { return 0 }
         }
         return emitMembers(receiverType, index, result, asProperty = null)
     }
@@ -280,32 +287,34 @@ object InteropCompletionItems {
         return n
     }
 
-    private fun emitDotDotMembers(
-        context: InteropCompletionContext.DotDotForm,
+    private fun emitChainStepMembers(
+        context: InteropCompletionContext.ChainStepForm,
         file: PsiFile,
         index: JsSymbolIndex,
         result: CompletionResultSet,
     ): Int {
         if (!index.isLoaded) return 0
         if (context.priorChain.isEmpty()) return 0
+        val kind = context.kind
 
-        var currentType = resolveRootToken(context.priorChain[0], file, index) ?: return 0
-
-        for (step in context.priorChain.drop(1)) {
-            val memberName = if (step.startsWith("-")) step.drop(1) else step
-            val member = index.resolveMember(currentType, memberName)?.first ?: return 0
-            val raw = if (member.kind == "method") member.returns else member.type
-            val next = index.canonicalType(raw)
-            if (next.isEmpty() || next == "any" || next == "void" || next == "undefined") return 0
-            currentType = next
+        var receiverType = resolveRootToken(context.priorChain[0], file, index) ?: return 0
+        // `doto` / `cond->` steps always receive the root value — prior steps don't matter.
+        if (!kind.rootReceiver) {
+            for (step in context.priorChain.drop(1)) {
+                val spec = InteropChainCore.parseStepToken(step, kind) ?: return 0
+                // `->>` list steps take their own first argument as receiver — not derivable
+                // from document text alone, so the threaded type is unknown from here on.
+                if (kind.threadsLast && spec.isListStep) return 0
+                receiverType = InteropChainCore.advance(receiverType, spec.memberName, index) ?: return 0
+            }
         }
 
-        val members = index.resolveMembers(currentType)
+        val members = index.resolveMembers(receiverType)
         var n = 0
         for ((memberName, resolved) in members) {
             val first = resolved.overloads.firstOrNull() ?: continue
             if (first.kind != "method" && first.kind != "property") continue
-            result.addElement(dotDotMemberLookup(memberName, resolved.declaringType, first))
+            result.addElement(chainStepMemberLookup(memberName, resolved.declaringType, first, kind))
             n++
         }
         return n
@@ -375,12 +384,16 @@ object InteropCompletionItems {
     }
 
     /**
-     * Lookup element for a `..` chain step. Properties are emitted as `-propName` so that a
-     * typed `-` prefix is matched by [PlainPrefixMatcher]. Methods are emitted as plain names.
+     * Lookup element for a chain-macro step. `..` steps are bare names with `-propName`
+     * properties; threading/doto steps carry the leading `.` / `.-` — either way the lookup
+     * string mirrors what the user types so [PlainPrefixMatcher] filters correctly.
      */
-    private fun dotDotMemberLookup(memberName: String, declaringType: String?, member: JsMember): LookupElement {
+    private fun chainStepMemberLookup(memberName: String, declaringType: String?, member: JsMember, kind: ChainKind): LookupElement {
         val isProperty = member.kind == "property"
-        val lookupString = if (isProperty) "-$memberName" else memberName
+        val lookupString = when {
+            kind.bareSteps -> if (isProperty) "-$memberName" else memberName
+            else -> if (isProperty) ".-$memberName" else ".$memberName"
+        }
         val sig = if (member.kind == "method") {
             "(" + member.params.joinToString(", ") { p ->
                 when {

@@ -149,6 +149,95 @@ class JsSymbolIndexTest {
     }
 
     @Test
+    fun genericSubstitutionProjectsMemberTypes() {
+        val index = JsSymbolIndex()
+        index.load(
+            ParsedSymbols(
+                interfaces = mapOf(
+                    "Box" to JsInterface(
+                        typeParams = listOf("T"),
+                        members = mapOf(
+                            "value" to listOf(JsMember(kind = "property", type = "T")),
+                            "map" to listOf(JsMember(kind = "method", returns = "Box<T>")),
+                        ),
+                    ),
+                    "Response" to JsInterface(
+                        members = mapOf("ok" to listOf(JsMember(kind = "property", type = "boolean"))),
+                    ),
+                ),
+                variables = mapOf("box" to JsVariableInfo(type = "Box<Response>")),
+            ),
+        )
+
+        assertEquals("Response", index.resolveJsChainType(listOf("box", "value")))
+        assertEquals("boolean", index.resolveJsChainType(listOf("box", "value", "ok")))
+        assertEquals(
+            "Box<Response>",
+            index.resolveJsChainTypeRef(listOf("box", "map"))?.display(),
+        )
+    }
+
+    @Test
+    fun canonicalTypeHandlesGenericsArraysAndUnions() {
+        val index = JsSymbolIndex()
+        assertEquals("Promise", index.canonicalType("Promise<Response>"))
+        assertEquals("Array", index.canonicalType("Element[]"))
+        assertEquals("Node", index.canonicalType("Node|null"))
+        assertEquals("Window", index.canonicalType("Window&any"))
+        assertEquals("Document", index.canonicalType("Document"))
+    }
+
+    @Test
+    fun unionAliasesExpandForMemberResolution() {
+        val index = JsSymbolIndex()
+        index.load(
+            ParsedSymbols(
+                interfaces = mapOf(
+                    "Blob" to JsInterface(
+                        members = mapOf("size" to listOf(JsMember(kind = "property", type = "number"))),
+                    ),
+                    "Body" to JsInterface(
+                        members = mapOf("payload" to listOf(JsMember(kind = "property", type = "BodyInit"))),
+                    ),
+                ),
+                variables = mapOf("req" to JsVariableInfo(type = "Body")),
+                aliases = mapOf("BodyInit" to "Blob|string"),
+            ),
+        )
+        assertEquals("Blob", index.canonicalType("BodyInit"))
+        assertEquals("Blob", index.resolveJsChainType(listOf("req", "payload")))
+        assertEquals("number", index.resolveJsChainType(listOf("req", "payload", "size")))
+    }
+
+    @Test
+    fun aliasCyclesAreCapped() {
+        val index = JsSymbolIndex()
+        index.load(
+            ParsedSymbols(
+                aliases = mapOf("A" to "B|null", "B" to "A|null"),
+            ),
+        )
+        // Must terminate; the exact result is unimportant.
+        index.canonicalType("A")
+    }
+
+    @Test
+    fun legacySchemaWithoutNewFieldsStillLoads() {
+        val mapper = com.fasterxml.jackson.module.kotlin.jacksonObjectMapper()
+        val legacyJson = """
+            {"interfaces":{"Doc":{"location":null,"extends":[],"members":{"title":[{"kind":"property","type":"string"}]}}},
+             "variables":{"doc":{"type":"Doc"}},
+             "functions":{}}
+        """.trimIndent()
+        val symbols = mapper.readValue(legacyJson, com.cursivejssupport.parser.ParsedSymbols::class.java)
+        val index = JsSymbolIndex()
+        index.load(symbols)
+        assertEquals("string", index.resolveJsChainType(listOf("doc", "title")))
+        assertTrue(symbols.interfaces["Doc"]!!.typeParams.isEmpty())
+        assertTrue(symbols.aliases.isEmpty())
+    }
+
+    @Test
     fun inheritedMembersResolveFromBaseInterfaces() {
         val index = JsSymbolIndex()
         index.load(

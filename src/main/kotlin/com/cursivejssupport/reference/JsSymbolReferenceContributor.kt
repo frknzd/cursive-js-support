@@ -2,18 +2,16 @@ package com.cursivejssupport.reference
 
 import com.cursivejssupport.index.JsSymbolIndex
 import com.cursivejssupport.npm.NsAliasResolver
+import com.cursivejssupport.util.InteropChains
 import com.intellij.openapi.util.TextRange
-import com.intellij.psi.PsiComment
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiReference
 import com.intellij.psi.PsiReferenceBase
 import com.intellij.psi.PsiReferenceContributor
 import com.intellij.psi.PsiReferenceProvider
 import com.intellij.psi.PsiReferenceRegistrar
-import com.intellij.psi.PsiWhiteSpace
 import com.intellij.patterns.PlatformPatterns
 import com.intellij.util.ProcessingContext
-import cursive.psi.api.ClList
 import cursive.psi.api.symbols.ClSymbol
 
 class JsSymbolReferenceContributor : PsiReferenceContributor() {
@@ -44,7 +42,7 @@ private class JsSymbolReferenceProvider : PsiReferenceProvider() {
         val isNpmAlias = ns != null && npmAliases.containsKey(ns)
         val bareNpmAlias = ns == null && npmAliases.containsKey(trimmed)
         val isDirectGoogAccess = ns != null && index.isKnownGoogNamespace(ns)
-        val isDotDotStep = isInsideDotDotChain(symbol)
+        val isChainStep = InteropChains.isChainStep(symbol)
 
         val looksLikeJsInterop =
             trimmed == "js" ||
@@ -55,7 +53,7 @@ private class JsSymbolReferenceProvider : PsiReferenceProvider() {
                 isNpmAlias ||
                 bareNpmAlias ||
                 isDirectGoogAccess ||
-                isDotDotStep
+                isChainStep
 
         if (!looksLikeJsInterop) return emptyArray()
 
@@ -65,23 +63,12 @@ private class JsSymbolReferenceProvider : PsiReferenceProvider() {
                 ns == "js" ||
                 trimmed.startsWith(".") ||
                 trimmed.startsWith(".-") ||
-                isDotDotStep
+                isChainStep
 
         if (!index.isLoaded && needsLoadedDomIndex) return emptyArray()
 
         return arrayOf(JsSymbolReference(symbol))
     }
-}
-
-/** Returns true when [symbol] is a method/property step at position ≥ 2 inside `(.. root ...)`. */
-private fun isInsideDotDotChain(symbol: ClSymbol): Boolean {
-    val list = symbol.parent as? ClList ?: return false
-    val children = list.children.filter {
-        it !is PsiWhiteSpace && it !is PsiComment && it.text != "(" && it.text != ")"
-    }
-    if (children.isEmpty() || children[0].text != "..") return false
-    val rootElement = children.getOrNull(1) ?: return false
-    return symbol.textOffset > rootElement.textOffset
 }
 
 private class JsSymbolReference(element: ClSymbol) : PsiReferenceBase<ClSymbol>(element, TextRange(0, element.textLength)) {

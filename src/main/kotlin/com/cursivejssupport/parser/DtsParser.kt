@@ -39,7 +39,9 @@ data class JsMember(
 data class JsInterface(
     val location: JsLocation? = null,
     val extends: List<String> = emptyList(),
-    val members: Map<String, List<JsMember>> = emptyMap()
+    val members: Map<String, List<JsMember>> = emptyMap(),
+    /** Declared type parameter names (`["T"]` for `NodeListOf<T>`); empty for legacy indexes. */
+    val typeParams: List<String> = emptyList()
 )
 
 data class JsVariableInfo(
@@ -51,7 +53,9 @@ data class JsVariableInfo(
 data class ParsedSymbols(
     val interfaces: Map<String, JsInterface>    = emptyMap(),
     val variables:  Map<String, JsVariableInfo> = emptyMap(),
-    val functions:  Map<String, List<JsMember>> = emptyMap()
+    val functions:  Map<String, List<JsMember>> = emptyMap(),
+    /** Union/intersection type aliases (`BodyInit` → `"Blob|BufferSource|…"`); empty for legacy indexes. */
+    val aliases:    Map<String, String>         = emptyMap()
 )
 
 // ─── Parser ───────────────────────────────────────────────────────────────────
@@ -110,7 +114,10 @@ class DtsParser(nodeExecutable: String) : AutoCloseable {
 
     companion object {
         fun findNodeExecutable(): String? {
-            val envPath = EnvironmentUtil.getEnvironmentMap()["PATH"] ?: System.getenv("PATH") ?: ""
+            // EnvironmentUtil is IDE-only; the generateBrowserSymbolsIndex JavaExec task runs
+            // this without the IntelliJ platform on the classpath.
+            val envPath = runCatching { EnvironmentUtil.getEnvironmentMap()["PATH"] }.getOrNull()
+                ?: System.getenv("PATH") ?: ""
             val dirs = envPath.split(File.pathSeparatorChar).toMutableList()
             dirs.addAll(listOf("/usr/local/bin", "/opt/homebrew/bin", "/usr/bin", "/bin"))
             for (dir in dirs.distinct()) {

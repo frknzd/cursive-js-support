@@ -8,10 +8,13 @@ plugins {
 
 intellijPlatform {
     buildSearchableOptions = false
+    // Pure-Kotlin plugin with no UI forms / Java @NotNull assertions — instrumentation adds
+    // nothing and fails against the local IDE install (no Java Compiler dependency for it).
+    instrumentCode = false
 }
 
 group = "com.cursivejssupport"
-version = "0.5.3-SNAPSHOT"
+version = "0.6.0"
 
 repositories {
     mavenCentral()
@@ -40,7 +43,8 @@ kotlin {
 tasks {
     patchPluginXml {
         sinceBuild.set("261")
-        untilBuild.set("261.*")
+        // No upper bound: keep the plugin available on all future IDE builds.
+        untilBuild.unset()
     }
 }
 

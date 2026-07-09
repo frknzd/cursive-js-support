@@ -9,7 +9,8 @@ import com.cursivejssupport.parser.JsVariableInfo
  * completion pipelines stay symmetric.
  *
  * Every variant carries enough information to format a definition line, body, and parameter /
- * return / link sections without re-querying the symbol index.
+ * return / link sections without re-querying the symbol index. Variants with callable members
+ * carry the FULL overload list; the first entry is the primary (kind-preferred) overload.
  */
 sealed interface InteropDocSubject {
 
@@ -24,7 +25,7 @@ sealed interface InteropDocSubject {
     data class JsFunction(
         val name: String,
         val overload: JsMember,
-        val overloadCount: Int = 1,
+        val overloads: List<JsMember> = listOf(overload),
     ) : InteropDocSubject
 
     /**
@@ -35,17 +36,37 @@ sealed interface InteropDocSubject {
         val segments: List<String>,
         val declaringType: String,
         val member: JsMember,
+        val overloads: List<JsMember> = listOf(member),
     ) : InteropDocSubject
+
+    /** One non-primary declaring interface of an ambiguous member, with its overloads. */
+    data class MemberGroup(
+        val declaringType: String,
+        val overloads: List<JsMember>,
+    )
 
     /**
      * `.method` / `.-prop` head-position member access. [declaringType] is the human-readable
-     * interface name (TYPE$ sanitization already applied) and [member] is the resolved overload.
+     * interface name (TYPE$ sanitization already applied) and [member] is the primary overload.
+     * [receiverText] is the receiver expression as written (`doc`, `js/document`) when short
+     * enough to reuse in the CLJS call-signature line.
      */
     data class Member(
         val name: String,
         val asProperty: Boolean,
         val declaringType: String,
         val member: JsMember,
+        val overloads: List<JsMember> = listOf(member),
+        val receiverText: String? = null,
+        /** Other interfaces also declaring [name] when the receiver type is unknown; empty ⇒ confident. */
+        val alternatives: List<MemberGroup> = emptyList(),
+    ) : InteropDocSubject
+
+    /** Constructor call `(Foo. …)` / `(js/Foo. …)` — [overloads] are the `new` signatures. */
+    data class Constructor(
+        val typeName: String,
+        val overloads: List<JsMember> = emptyList(),
+        val doc: String? = null,
     ) : InteropDocSubject
 
     /** `<alias>/<export>` resolved to a known npm export. */
@@ -53,6 +74,9 @@ sealed interface InteropDocSubject {
         val packageName: String,
         val exportName: String,
         val type: String?,
+        /** Function-shaped export signatures when the typings carried them (also goog fns). */
+        val overloads: List<JsMember> = emptyList(),
+        val doc: String? = null,
     ) : InteropDocSubject
 
     /** A bare alias symbol (e.g. `react` when an alias resolves to `["react"]`). */

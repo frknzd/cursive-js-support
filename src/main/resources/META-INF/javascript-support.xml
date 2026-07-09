@@ -3,4 +3,8 @@
         <projectService
                 serviceImplementation="com.cursivejssupport.npm.IntellijNpmResolutionService"/>
     </extensions>
+
+    <extensions defaultExtensionNs="com.cursivejssupport">
+        <jsTypeSource implementation="com.cursivejssupport.npm.JsPluginTypeSource"/>
+    </extensions>
 </idea-plugin>

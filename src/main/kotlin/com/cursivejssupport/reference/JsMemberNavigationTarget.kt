@@ -28,6 +28,8 @@ class JsMemberNavigationTarget(
     private val deprecatedHint: Boolean,
     private val location: JsLocation? = null,
     private val member: JsMember? = null,
+    private val ordinal: Int? = null,
+    private val total: Int? = null,
 ) : LightElement(manager, language), NavigatablePsiElement {
 
     /** Declaring interface name (e.g. `Document`) for presentation / resolve metadata. */
@@ -39,20 +41,24 @@ class JsMemberNavigationTarget(
     /** The parsed member metadata behind this target; null for non-member wrappers. */
     val jsMember: JsMember? get() = member
 
+    /** True when this row carries a `(i/N)` position label from the alternatives chooser. */
+    val isNumberedAlternative: Boolean get() = ordinal != null && total != null
+
     override fun getText(): String = delegate.text
     override fun getContainingFile(): PsiFile = delegate.containingFile
     override fun getNavigationElement(): PsiElement = delegate
     override fun getParent(): PsiElement? = null
 
     override fun getPresentation(): ItemPresentation = object : ItemPresentation {
-        override fun getPresentableText(): String {
-            val base = buildString {
-                append(memberSignature(delegate.text, member))
-                append("  —  ")
-                append(declaringInterface)
-            }
-            return if (deprecatedHint) "$base  —  @deprecated" else base
-        }
+        override fun getPresentableText(): String =
+            presentableRowText(
+                name = delegate.text,
+                declaringInterface = declaringInterface,
+                ordinal = ordinal,
+                total = total,
+                signature = memberSignature(delegate.text, member),
+                deprecated = deprecatedHint,
+            )
 
         override fun getLocationString(): String? {
             val raw = location?.filePath ?: delegate.containingFile.virtualFile?.path ?: return null
@@ -115,6 +121,44 @@ class JsMemberNavigationTarget(
                 "$name($params): ${member.returns}"
             }
             else -> "$name: ${member.type}"
+        }
+    }
+
+    companion object {
+        /**
+         * Pure row-text builder for the "Choose Declaration" popup.
+         *
+         * With a position label: `scrollTop in Element (2/11)  —  scrollTop: number`.
+         * Without: `createRange(): Range  —  Document` (single/confident rows keep the
+         * signature-first layout).
+         */
+        internal fun presentableRowText(
+            name: String,
+            declaringInterface: String,
+            ordinal: Int?,
+            total: Int?,
+            signature: String,
+            deprecated: Boolean,
+        ): String {
+            val base = if (ordinal != null && total != null) {
+                buildString {
+                    append(name)
+                    append(" in ")
+                    append(declaringInterface)
+                    append(" (")
+                    append(ordinal)
+                    append('/')
+                    append(total)
+                    append(')')
+                    if (signature != name) {
+                        append("  —  ")
+                        append(signature)
+                    }
+                }
+            } else {
+                "$signature  —  $declaringInterface"
+            }
+            return if (deprecated) "$base  —  @deprecated" else base
         }
     }
 }

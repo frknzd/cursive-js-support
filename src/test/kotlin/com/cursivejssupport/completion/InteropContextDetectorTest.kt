@@ -2,6 +2,7 @@ package com.cursivejssupport.completion
 
 import com.cursivejssupport.npm.NpmBinding
 import com.cursivejssupport.npm.NpmBindingKind
+import com.cursivejssupport.util.ChainKind
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -329,74 +330,138 @@ class InteropContextDetectorTest {
         assertFalse(InteropAutoPopupHandler.shouldOpen("(goog", 5, knownGoogNamespaces = emptySet()))
     }
 
-    // ─── DotDotForm ──────────────────────────────────────────────────────────
+    // ─── ChainStepForm ───────────────────────────────────────────────────────
+
+    private fun chainStep(text: String): InteropCompletionContext.ChainStepForm {
+        val ctx = detect(text)
+        assertTrue("expected ChainStepForm for <$text> but was $ctx", ctx is InteropCompletionContext.ChainStepForm)
+        return ctx as InteropCompletionContext.ChainStepForm
+    }
 
     @Test fun `dot-dot form empty prefix at step-1 position`() {
-        val ctx = detect("(.. js/document ")
-        assertTrue(ctx is InteropCompletionContext.DotDotForm)
-        ctx as InteropCompletionContext.DotDotForm
+        val ctx = chainStep("(.. js/document ")
+        assertEquals(ChainKind.DOT_DOT, ctx.kind)
         assertEquals(listOf("js/document"), ctx.priorChain)
         assertEquals("", ctx.prefix)
     }
 
     @Test fun `dot-dot form partial method prefix`() {
-        val ctx = detect("(.. js/document cre")
-        assertTrue(ctx is InteropCompletionContext.DotDotForm)
-        ctx as InteropCompletionContext.DotDotForm
+        val ctx = chainStep("(.. js/document cre")
         assertEquals(listOf("js/document"), ctx.priorChain)
         assertEquals("cre", ctx.prefix)
         assertEquals("(.. js/document ".length, ctx.replacementStart)
     }
 
     @Test fun `dot-dot form two prior steps empty prefix`() {
-        val ctx = detect("(.. js/document createRange ")
-        assertTrue(ctx is InteropCompletionContext.DotDotForm)
-        ctx as InteropCompletionContext.DotDotForm
+        val ctx = chainStep("(.. js/document createRange ")
         assertEquals(listOf("js/document", "createRange"), ctx.priorChain)
         assertEquals("", ctx.prefix)
     }
 
     @Test fun `dot-dot form property prefix with dash`() {
-        val ctx = detect("(.. js/document -inn")
-        assertTrue(ctx is InteropCompletionContext.DotDotForm)
-        ctx as InteropCompletionContext.DotDotForm
+        val ctx = chainStep("(.. js/document -inn")
         assertEquals(listOf("js/document"), ctx.priorChain)
         assertEquals("-inn", ctx.prefix)
     }
 
     @Test fun `dot-dot form npm alias root`() {
-        val ctx = detect("(.. R/Component ")
-        assertTrue(ctx is InteropCompletionContext.DotDotForm)
-        ctx as InteropCompletionContext.DotDotForm
+        val ctx = chainStep("(.. R/Component ")
         assertEquals(listOf("R/Component"), ctx.priorChain)
         assertEquals("", ctx.prefix)
     }
 
     @Test fun `dot-dot form three steps partial`() {
-        val ctx = detect("(.. js/document body firstChild nodeV")
-        assertTrue(ctx is InteropCompletionContext.DotDotForm)
-        ctx as InteropCompletionContext.DotDotForm
+        val ctx = chainStep("(.. js/document body firstChild nodeV")
         assertEquals(listOf("js/document", "body", "firstChild"), ctx.priorChain)
         assertEquals("nodeV", ctx.prefix)
     }
 
-    @Test fun `dot-dot form at root position returns non-DotDotForm`() {
+    @Test fun `dot-dot form at root position returns non-ChainStepForm`() {
         // caret is right after `..` — position 0, the root.  Existing logic handles it.
         val ctx = detect("(.. ")
-        assertFalse(ctx is InteropCompletionContext.DotDotForm)
+        assertFalse(ctx is InteropCompletionContext.ChainStepForm)
     }
 
-    @Test fun `dot-dot form does not fire outside double-dot forms`() {
-        // `do` form: not a `..`
+    @Test fun `chain form does not fire outside chain forms`() {
+        // `do` form: not a chain macro
         val ctx = detect("(do js/document ")
-        assertFalse(ctx is InteropCompletionContext.DotDotForm)
+        assertFalse(ctx is InteropCompletionContext.ChainStepForm)
     }
 
     @Test fun `dot-dot form nested inside outer list`() {
-        val ctx = detect("(let [x 1] (.. js/document ")
-        assertTrue(ctx is InteropCompletionContext.DotDotForm)
-        ctx as InteropCompletionContext.DotDotForm
+        val ctx = chainStep("(let [x 1] (.. js/document ")
         assertEquals(listOf("js/document"), ctx.priorChain)
         assertEquals("", ctx.prefix)
+    }
+
+    @Test fun `dot-dot form list-step head position`() {
+        val ctx = chainStep("(.. js/document (crea")
+        assertEquals(ChainKind.DOT_DOT, ctx.kind)
+        assertEquals(listOf("js/document"), ctx.priorChain)
+        assertEquals("crea", ctx.prefix)
+    }
+
+    @Test fun `dot-dot form prior list step is kept whole`() {
+        val ctx = chainStep("(.. js/document (createElement \"div\") -sty")
+        assertEquals(listOf("js/document", "(createElement \"div\")"), ctx.priorChain)
+        assertEquals("-sty", ctx.prefix)
+    }
+
+    @Test fun `thread-first bare dot step`() {
+        val ctx = chainStep("(-> js/document .cre")
+        assertEquals(ChainKind.THREAD_FIRST, ctx.kind)
+        assertEquals(listOf("js/document"), ctx.priorChain)
+        assertEquals(".cre", ctx.prefix)
+    }
+
+    @Test fun `thread-first list-step head`() {
+        val ctx = chainStep("(-> js/document (.cre")
+        assertEquals(ChainKind.THREAD_FIRST, ctx.kind)
+        assertEquals(listOf("js/document"), ctx.priorChain)
+        assertEquals(".cre", ctx.prefix)
+    }
+
+    @Test fun `thread-first after prior steps`() {
+        val ctx = chainStep("(-> js/document .-body (.appendChild el) .-parent")
+        assertEquals(listOf("js/document", ".-body", "(.appendChild el)"), ctx.priorChain)
+        assertEquals(".-parent", ctx.prefix)
+    }
+
+    @Test fun `thread-first bare non-dot token falls through`() {
+        // Likely a plain function call — the generic classifiers should handle it.
+        val ctx = detect("(-> js/document upp")
+        assertFalse(ctx is InteropCompletionContext.ChainStepForm)
+    }
+
+    @Test fun `doto list-step head`() {
+        val ctx = chainStep("(doto js/document (.setAtt")
+        assertEquals(ChainKind.DOTO, ctx.kind)
+        assertEquals(listOf("js/document"), ctx.priorChain)
+        assertEquals(".setAtt", ctx.prefix)
+    }
+
+    @Test fun `thread-last bare dot step`() {
+        val ctx = chainStep("(->> js/document .cre")
+        assertEquals(ChainKind.THREAD_LAST, ctx.kind)
+        assertEquals(listOf("js/document"), ctx.priorChain)
+        assertEquals(".cre", ctx.prefix)
+    }
+
+    @Test fun `some-thread-first is recognised`() {
+        val ctx = chainStep("(some-> js/document .cre")
+        assertEquals(ChainKind.SOME_FIRST, ctx.kind)
+    }
+
+    @Test fun `cond-thread test position falls through`() {
+        // `(cond-> x <caret>` — the caret is at a TEST position, not a step.
+        val ctx = detect("(cond-> js/document .cre")
+        assertFalse(ctx is InteropCompletionContext.ChainStepForm)
+    }
+
+    @Test fun `cond-thread step position is recognised`() {
+        val ctx = chainStep("(cond-> js/document some-test? .cre")
+        assertEquals(ChainKind.COND_FIRST, ctx.kind)
+        assertEquals(listOf("js/document", "some-test?"), ctx.priorChain)
+        assertEquals(".cre", ctx.prefix)
     }
 }

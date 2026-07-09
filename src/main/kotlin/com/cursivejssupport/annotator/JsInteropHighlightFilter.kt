@@ -2,15 +2,14 @@ package com.cursivejssupport.annotator
 
 import com.cursivejssupport.index.JsSymbolIndex
 import com.cursivejssupport.npm.NsAliasResolver
+import com.cursivejssupport.util.InteropChains
 import com.cursivejssupport.util.JsInteropIndexQueries
 import com.cursivejssupport.util.JsResolveUtil
 import com.intellij.codeInsight.daemon.impl.HighlightInfo
 import com.intellij.codeInsight.daemon.impl.HighlightInfoFilter
 import com.intellij.openapi.editor.Document
 import com.intellij.openapi.util.TextRange
-import com.intellij.psi.PsiComment
 import com.intellij.psi.PsiFile
-import com.intellij.psi.PsiWhiteSpace
 import com.intellij.psi.util.PsiTreeUtil
 import cursive.psi.api.ClList
 import cursive.psi.impl.symbols.ClEditorSymbol
@@ -116,16 +115,17 @@ class JsInteropHighlightFilter : HighlightInfoFilter {
             }
         }
 
-        // 3d. Bare method/property name inside (.. root step1 step2 ...) chain forms.
-        // Only suppress when the member actually resolves on the inferred receiver type.
+        // 3d. Bare method/property step inside chain forms — (.. root …), (-> root …), etc.
+        // Only suppress when the member actually resolves on the inferred receiver type, so
+        // genuine typos like `(-> x (my-fnn))` keep their highlight.
         if (!text.startsWith(".") && '/' !in text && index.isLoaded) {
             val elementAtOffset = file.findElementAt(start)
             val sym = PsiTreeUtil.getParentOfType(elementAtOffset, ClEditorSymbol::class.java, false)
             if (sym != null) {
-                val receiverType = dotDotChainReceiverType(sym, index)
-                if (receiverType != null) {
-                    val memberName = if (text.startsWith("-")) text.drop(1) else text
-                    if (index.resolveMember(receiverType, memberName) != null) return false
+                val ctx = InteropChains.stepContext(sym, index)
+                val receiverType = ctx?.receiverType
+                if (receiverType != null && index.resolveMember(receiverType, ctx.memberName) != null) {
+                    return false
                 }
             }
         }
@@ -240,34 +240,6 @@ class JsInteropHighlightFilter : HighlightInfoFilter {
         if (Companion.looksLikeJsTrailingMemberInSequence(document.charsSequence, start)) return true
 
         return false
-    }
-
-    /**
-     * If [symbol] is a step at position ≥ 2 inside `(.. root step1 step2 ...)`, walks the prior
-     * steps and returns the receiver type for this step. Returns null when the symbol is not a
-     * chain step or the chain cannot be fully resolved up to this point.
-     */
-    private fun dotDotChainReceiverType(symbol: ClEditorSymbol, index: JsSymbolIndex): String? {
-        val list = symbol.parent as? ClList ?: return null
-        val children = list.children.filter {
-            it.text != "(" && it.text != ")" && it !is PsiWhiteSpace && it !is PsiComment
-        }
-        if (children.isEmpty() || children[0].text != "..") return null
-        val rootElement = children.getOrNull(1) ?: return null
-        if (symbol.textOffset <= rootElement.textOffset) return null
-
-        var currentType = JsResolveUtil.resolveType(rootElement, index) ?: return null
-        val symOffset = symbol.textOffset
-        for (step in children.drop(2)) {
-            if (step.textOffset >= symOffset) break
-            val stepText = step.text ?: continue
-            val mn = if (stepText.startsWith("-")) stepText.drop(1) else stepText
-            val member = index.resolveMember(currentType, mn)?.first ?: return null
-            val raw = if (member.kind == "method") member.returns else member.type
-            currentType = index.canonicalType(raw)
-            if (currentType.isEmpty() || currentType == "any" || currentType == "void") return null
-        }
-        return currentType
     }
 
     companion object {

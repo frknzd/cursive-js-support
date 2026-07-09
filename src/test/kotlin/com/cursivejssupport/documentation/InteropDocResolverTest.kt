@@ -64,6 +64,31 @@ class InteropDocResolverTest {
                             "acceptNode" to listOf(JsMember(kind = "method", returns = "number"))
                         )
                     ),
+                    // `clear` is deliberately ambiguous: three method declarers (one of them a
+                    // TYPE$ companion pair), one property declarer, and one inherit-only type.
+                    "Storage" to JsInterface(
+                        members = mapOf(
+                            "clear" to listOf(JsMember(kind = "method", returns = "void", doc = "Empties the store."))
+                        )
+                    ),
+                    "DOMTokenList" to JsInterface(
+                        members = mapOf(
+                            "clear" to listOf(
+                                JsMember(kind = "method", returns = "void"),
+                                JsMember(kind = "method", returns = "void", params = listOf(JsParam("force", "boolean"))),
+                            )
+                        )
+                    ),
+                    "Junk" to JsInterface(
+                        members = mapOf("clear" to listOf(JsMember(kind = "method", returns = "void")))
+                    ),
+                    "TYPE\$Junk" to JsInterface(
+                        members = mapOf("clear" to listOf(JsMember(kind = "method", returns = "void")))
+                    ),
+                    "WeirdThing" to JsInterface(
+                        members = mapOf("clear" to listOf(JsMember(kind = "property", type = "boolean")))
+                    ),
+                    "SessionStorage" to JsInterface(extends = listOf("Storage")),
                 ),
                 variables = mapOf(
                     "document" to JsVariableInfo(type = "Document", doc = "Global document object."),
@@ -135,7 +160,7 @@ class InteropDocResolverTest {
     }
 
     @Test
-    fun `dot property falls through to prefix sampler when receiver type is unknown`() {
+    fun `dot property resolves when receiver type is unknown`() {
         val subject = InteropDocResolver.resolveFromParts(
             namespace = null, name = ".-commonAncestorContainer",
             receiverType = null, aliases = emptyMap(), index = buildIndex(),
@@ -145,6 +170,67 @@ class InteropDocResolverTest {
         assertEquals(true, subject.asProperty)
         assertEquals("commonAncestorContainer", subject.name)
         assertEquals("Range", subject.declaringType)
+        // Only Range declares it, so there are no alternatives.
+        assertTrue(subject.alternatives.isEmpty())
+    }
+
+    @Test
+    fun `ambiguous method lists every other declaring interface as alternative`() {
+        val subject = InteropDocResolver.resolveFromParts(
+            namespace = null, name = ".clear",
+            receiverType = null, aliases = emptyMap(), index = buildIndex(),
+        )
+        assertTrue(subject is InteropDocSubject.Member)
+        subject as InteropDocSubject.Member
+        // Method declarers rank before the property declarer; ties break alphabetically.
+        assertEquals("DOMTokenList", subject.declaringType)
+        assertEquals("method", subject.member.kind)
+        assertEquals(2, subject.overloads.size)
+        assertEquals(
+            listOf("Junk", "Storage", "WeirdThing"),
+            subject.alternatives.map { it.declaringType },
+        )
+    }
+
+    @Test
+    fun `ambiguous property prefers property declarer as primary`() {
+        val subject = InteropDocResolver.resolveFromParts(
+            namespace = null, name = ".-clear",
+            receiverType = null, aliases = emptyMap(), index = buildIndex(),
+        )
+        assertTrue(subject is InteropDocSubject.Member)
+        subject as InteropDocSubject.Member
+        assertEquals("WeirdThing", subject.declaringType)
+        assertEquals("property", subject.member.kind)
+        assertEquals(
+            listOf("DOMTokenList", "Junk", "Storage"),
+            subject.alternatives.map { it.declaringType },
+        )
+    }
+
+    @Test
+    fun `ambiguous member suppresses TYPE companion when plain interface also declares`() {
+        val subject = InteropDocResolver.resolveFromParts(
+            namespace = null, name = ".clear",
+            receiverType = null, aliases = emptyMap(), index = buildIndex(),
+        )
+        subject as InteropDocSubject.Member
+        val allTypes = listOf(subject.declaringType) + subject.alternatives.map { it.declaringType }
+        // TYPE$Junk collapses into Junk; SessionStorage only inherits and never appears.
+        assertEquals(1, allTypes.count { it == "Junk" })
+        assertTrue("SessionStorage" !in allTypes)
+    }
+
+    @Test
+    fun `known receiver keeps confident single-interface docs`() {
+        val subject = InteropDocResolver.resolveFromParts(
+            namespace = null, name = ".clear",
+            receiverType = "Storage", aliases = emptyMap(), index = buildIndex(),
+        )
+        assertTrue(subject is InteropDocSubject.Member)
+        subject as InteropDocSubject.Member
+        assertEquals("Storage", subject.declaringType)
+        assertTrue(subject.alternatives.isEmpty())
     }
 
     @Test

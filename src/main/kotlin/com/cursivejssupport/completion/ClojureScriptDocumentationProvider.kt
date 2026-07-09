@@ -59,7 +59,6 @@ class ClojureScriptDocumentationProvider : AbstractDocumentationProvider() {
             member != null -> InteropDocSubject.JsFunction(
                 name = element.name,
                 overload = member,
-                overloadCount = 1,
             )
             else -> InteropDocSubject.Unknown
         }

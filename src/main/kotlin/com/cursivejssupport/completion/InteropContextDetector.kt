@@ -3,6 +3,7 @@ package com.cursivejssupport.completion
 import com.cursivejssupport.npm.InteropNsRequireParser
 import com.cursivejssupport.npm.NpmBinding
 import com.cursivejssupport.npm.NpmBindingKind
+import com.cursivejssupport.util.ChainKind
 import com.intellij.codeInsight.completion.CompletionUtilCore
 
 /**
@@ -36,7 +37,7 @@ object InteropContextDetector {
         // 2. Otherwise look at the identifier-like token immediately to the left of the caret.
         val tokenStart = scanTokenStart(doc, caret)
         if (tokenStart == caret) {
-            detectDotDotForm(doc, tokenStart, caret)?.let { return it }
+            detectChainStepForm(doc, tokenStart, caret)?.let { return it }
             return if (aliases.isNotEmpty()) {
                 InteropCompletionContext.NpmAliasName(aliases, "", caret)
             } else {
@@ -45,7 +46,7 @@ object InteropContextDetector {
         }
         val token = doc.subSequence(tokenStart, caret).toString().stripCompletionDummy()
         if (token.isEmpty()) {
-            detectDotDotForm(doc, tokenStart, caret)?.let { return it }
+            detectChainStepForm(doc, tokenStart, caret)?.let { return it }
             return if (aliases.isNotEmpty()) {
                 InteropCompletionContext.NpmAliasName(aliases, "", caret)
             } else {
@@ -53,7 +54,7 @@ object InteropContextDetector {
             }
         }
 
-        detectDotDotForm(doc, tokenStart, caret)?.let { return it }
+        detectChainStepForm(doc, tokenStart, caret)?.let { return it }
         return classifyToken(token, tokenStart, aliases, knownGoogNamespaces)
     }
 
@@ -262,38 +263,82 @@ object InteropContextDetector {
     }
 
     private fun isTokenChar(c: Char): Boolean =
-        c.isLetterOrDigit() || c == '-' || c == '_' || c == '$' || c == '.' || c == '/' || c == '?' || c == '!' || c == '*' || c == '+' || c == '='
+        c.isLetterOrDigit() || c == '-' || c == '_' || c == '$' || c == '.' || c == '/' ||
+            c == '?' || c == '!' || c == '*' || c == '+' || c == '=' || c == '>' || c == '<'
 
     /**
-     * Detects whether [tokenStart] is a chain-step position inside a `(.. root ...)` form.
+     * Detects whether [tokenStart] is a chain-step position inside a chain-macro form —
+     * `(.. root …)`, `(-> root …)`, `(doto root …)`, etc.
      *
-     * Scans backward from [tokenStart] collecting simple tokens and skipping nested forms.
-     * Returns a [InteropCompletionContext.DotDotForm] when:
-     * - the first token found is exactly `..` (the form head), AND
-     * - at least one prior element (the root) has already been typed.
+     * Two positions are recognised:
+     * - **bare step**: the enclosing form's head is a chain macro (`(.. js/document cre<caret>`,
+     *   `(-> x .-body .<caret>`);
+     * - **list-step head**: the caret's token heads a `(.name …)` list whose PARENT form is the
+     *   chain macro (`(-> x (.fo<caret>`, `(.. doc (crea<caret>`).
      *
-     * Returns `null` when the user is at the root position (nothing before the `..` found) or
-     * when the enclosing form's head is not `..`.
+     * Returns `null` when the caret is at the root position, at a `cond->` test position, or
+     * the enclosing form is not a chain macro.
      */
-    private fun detectDotDotForm(
+    private fun detectChainStepForm(
         doc: CharSequence,
         tokenStart: Int,
         caret: Int,
-    ): InteropCompletionContext.DotDotForm? {
-        val limit = (tokenStart - MAX_SCAN).coerceAtLeast(0)
-        var i = tokenStart
-        val tokens = ArrayDeque<String>()
+    ): InteropCompletionContext.ChainStepForm? {
+        val scan = scanEnclosingForm(doc, tokenStart) ?: return null
+        val prefix = doc.subSequence(tokenStart, caret).toString().stripCompletionDummy()
 
-        outer@ while (i > limit) {
+        // Bare-step position.
+        ChainKind.fromHead(scan.tokens.firstOrNull())?.let { kind ->
+            return chainStepFormOrNull(kind, scan.tokens.drop(1), prefix, tokenStart)
+        }
+
+        // List-step head position: no sibling tokens inside the current form — look one level up.
+        if (scan.tokens.isEmpty() && scan.openParenPos != null) {
+            val parent = scanEnclosingForm(doc, scan.openParenPos) ?: return null
+            ChainKind.fromHead(parent.tokens.firstOrNull())?.let { kind ->
+                return chainStepFormOrNull(kind, parent.tokens.drop(1), prefix, tokenStart)
+            }
+        }
+        return null
+    }
+
+    private fun chainStepFormOrNull(
+        kind: ChainKind,
+        priorChain: List<String>,
+        prefix: String,
+        replacementStart: Int,
+    ): InteropCompletionContext.ChainStepForm? {
+        if (priorChain.isEmpty()) return null  // caret is at root position; existing logic handles it
+        // `cond->` family: elements come in `test step` pairs after the root — the caret is a
+        // step only when root + a whole number of pairs precede it.
+        if (kind.isConditional && priorChain.size % 2 != 0) return null
+        // Threading/doto steps are dot-prefixed; a bare token here is likely a plain function
+        // call — let the generic classifiers handle it.
+        if (!kind.bareSteps && prefix.isNotEmpty() && !prefix.startsWith(".")) return null
+        return InteropCompletionContext.ChainStepForm(kind, priorChain, prefix, replacementStart)
+    }
+
+    private class FormScan(val tokens: List<String>, val openParenPos: Int?)
+
+    /**
+     * Scans backward from [from] collecting the preceding sibling tokens of the enclosing form,
+     * skipping nested forms as single raw tokens. Returns null when an unrecognised character
+     * (`;`, `"`, `@`, `#`, …) is hit; [FormScan.openParenPos] is the offset of the enclosing
+     * `(`, or null when the scan window was exhausted first.
+     */
+    private fun scanEnclosingForm(doc: CharSequence, from: Int): FormScan? {
+        val limit = (from - MAX_SCAN).coerceAtLeast(0)
+        var i = from
+        val tokens = ArrayDeque<String>()
+        while (i > limit) {
             // Skip whitespace
             while (i > limit && doc[i - 1].isWhitespace()) i--
             if (i <= limit) break
-
             when {
-                doc[i - 1] == '(' -> break  // found enclosing open-paren
+                doc[i - 1] == '(' -> return FormScan(tokens.toList(), i - 1)
                 doc[i - 1] == ')' || doc[i - 1] == ']' || doc[i - 1] == '}' -> {
                     val matchOpen = skipFormBackward(doc, i - 1, limit)
-                    if (matchOpen < limit) break@outer
+                    if (matchOpen < limit) return FormScan(tokens.toList(), null)
                     tokens.addFirst(doc.subSequence(matchOpen, i).toString())
                     i = matchOpen
                 }
@@ -302,20 +347,10 @@ object InteropContextDetector {
                     while (i > limit && isTokenChar(doc[i - 1])) i--
                     tokens.addFirst(doc.subSequence(i, end).toString())
                 }
-                else -> break  // unrecognised char (`;`, `"`, `@`, `#`, …): bail out
+                else -> return null  // unrecognised char (`;`, `"`, `@`, `#`, …): bail out
             }
         }
-
-        if (tokens.isEmpty() || tokens.first() != "..") return null
-        val chain = tokens.drop(1)
-        if (chain.isEmpty()) return null  // user is at root position; existing logic handles it
-
-        val prefix = doc.subSequence(tokenStart, caret).toString().stripCompletionDummy()
-        return InteropCompletionContext.DotDotForm(
-            priorChain = chain,
-            prefix = prefix,
-            replacementStart = tokenStart,
-        )
+        return FormScan(tokens.toList(), null)
     }
 
     /** Finds the matching open-delimiter for a close-delimiter at [closePos], scanning backward. */

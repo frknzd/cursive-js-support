@@ -3,6 +3,8 @@ package com.cursivejssupport.reference
 import com.cursivejssupport.index.JsSymbolIndex
 import com.cursivejssupport.npm.NpmPackageResolver
 import com.cursivejssupport.npm.NsAliasResolver
+import com.cursivejssupport.types.JsTypeSources
+import com.cursivejssupport.util.InteropChains
 import com.cursivejssupport.util.JsInteropChain
 import com.cursivejssupport.util.JsInteropPsi
 import com.cursivejssupport.util.JsResolveUtil
@@ -80,39 +82,6 @@ object JsInteropNavigation {
         return "id:${System.identityHashCode(element)}"
     }
 
-    /**
-     * If [symbol] is a step at position ≥ 2 inside `(.. root step1 step2 ...)`, walks the
-     * prior chain through [index] and returns `(receiverType, memberName)` for this step.
-     * Returns null when the symbol is not a chain step or the chain cannot be resolved.
-     */
-    fun dotDotChainStepContext(symbol: PsiElement, index: JsSymbolIndex): Pair<String, String>? {
-        val sym = JsInteropPsi.enclosingEditorSymbol(symbol) ?: symbol
-        val list = sym.parent as? ClList ?: return null
-        val children = list.children.filter {
-            it !is PsiWhiteSpace && it !is PsiComment && it.text != "(" && it.text != ")"
-        }
-        if (children.isEmpty() || children[0].text != "..") return null
-        val rootElement = children.getOrNull(1) ?: return null
-        val symOffset = sym.textOffset
-        if (symOffset <= rootElement.textOffset) return null  // ".." or root: handled by other branches
-
-        var currentType = JsResolveUtil.resolveType(rootElement, index) ?: return null
-
-        for (step in children.drop(2)) {
-            if (step.textOffset >= symOffset) break
-            val stepText = step.text ?: continue
-            val mn = if (stepText.startsWith("-")) stepText.drop(1) else stepText
-            val member = index.resolveMember(currentType, mn)?.first ?: return null
-            val raw = if (member.kind == "method") member.returns else member.type
-            currentType = index.canonicalType(raw)
-            if (currentType.isEmpty() || currentType == "any" || currentType == "void") return null
-        }
-
-        val symText = sym.text ?: return null
-        val memberName = if (symText.startsWith("-")) symText.drop(1) else symText
-        return Pair(currentType, memberName)
-    }
-
     private fun resolveGotoTargetsRaw(
         sourceElement: PsiElement,
         project: Project,
@@ -138,7 +107,7 @@ object JsInteropNavigation {
             val packageName = aliases[namespace]!!.packageName
             val anchorPath = file.virtualFile?.path
             if (exportName != null && exportName != namespace) {
-                resolveNpmAliasExportOrMemberTargets(project, index, packageName, exportName)?.let { return it }
+                resolveNpmAliasExportOrMemberTargets(project, index, packageName, exportName, file)?.let { return it }
             } else {
                 val targets = mutableListOf<PsiElement>()
 
@@ -151,7 +120,7 @@ object JsInteropNavigation {
 
         // Direct goog.namespace/symbol access (no alias declaration required — goog is always available)
         if (exportName != null && index.isKnownGoogNamespace(namespace)) {
-            resolveNpmAliasExportOrMemberTargets(project, index, namespace, exportName)?.let { return it }
+            resolveNpmAliasExportOrMemberTargets(project, index, namespace, exportName, file)?.let { return it }
         }
 
         if (text.startsWith("js/") || (JsInteropPsi.enclosingEditorSymbol(sourceElement)?.namespace == "js")) {
@@ -173,9 +142,24 @@ object JsInteropNavigation {
             }
         }
 
+        // Chain step: member step inside (.. root …), (-> root …), (doto root …), etc.
+        // Must run before the generic dot-member branch — inside `(-> x (.foo a))` the
+        // receiver is the threaded value, not the step's own second child.
+        InteropChains.stepContext(sourceElement, index)?.let { ctx ->
+            val receiverType = ctx.receiverType
+            if (receiverType != null) {
+                index.getMemberPsiElements(project, receiverType, ctx.memberName)?.let { targets ->
+                    // Confidently-typed receiver: jump straight to the declaration instead of
+                    // offering every overload — hover lists the full overload set.
+                    return if (ctx.confident) arrayOf(targets.first()) else targets
+                }
+            }
+            index.getAnyMemberPsiElements(project, ctx.memberName, preferredReceiverType = receiverType)
+                ?.let { return it }
+        }
+
         if (text.startsWith(".") || text.startsWith(".-")) {
             val memberName = text.removePrefix(".-").removePrefix(".")
-            var targets: Array<PsiElement>? = null
 
             var listElement: PsiElement? = sourceElement
             while (listElement != null && !listElement.text.startsWith("(")) {
@@ -183,6 +167,7 @@ object JsInteropNavigation {
             }
 
             var preferredType: String? = null
+            var confident = false
             if (listElement != null) {
                 val children = listElement.children.filter {
                     it !is PsiWhiteSpace && it !is PsiComment && it.text != "(" && it.text != ")"
@@ -192,42 +177,41 @@ object JsInteropNavigation {
                 if (children.size > 1 && headText == text) {
                     val receiver = children[1]
                     val receiverText = JsInteropPsi.enclosingEditorSymbol(receiver)?.text ?: receiver.text
-                    var typeName = JsResolveUtil.resolveType(receiver, index)
+                    val resolution = JsResolveUtil.resolveTypeRef(receiver, index)
+                    var typeName = resolution?.name
+                    confident = resolution?.confident == true
                     if (typeName == null && receiverText.startsWith("js/")) {
                         val chain = JsInteropChain.segmentsFromFullText(receiverText)
                         if (chain != null && chain.isNotEmpty()) {
                             typeName = index.resolveJsChainType(chain)
+                            confident = typeName != null
                         }
                     }
                     if (typeName == null && receiver is ClEditorSymbol && receiver.namespace == "js") {
                         val nm = receiver.name
                         if (nm != null && nm.contains('.')) {
                             typeName = index.resolveJsChainType(nm.split('.').map { it.trim() }.filter { it.isNotEmpty() })
+                            confident = typeName != null
                         }
                     }
                     if (typeName == null && receiver.text.startsWith("js/")) {
                         val globalName = receiverText.removePrefix("js/")
                         typeName = index.resolveGlobalType(globalName)
+                        confident = typeName != null
                     }
                     preferredType = typeName
                     if (typeName != null) {
-                        targets = index.getMemberPsiElements(project, typeName, memberName)
+                        index.getMemberPsiElements(project, typeName, memberName)?.let { targets ->
+                            // Confident receiver + member hit: direct jump (first overload);
+                            // hover shows the remaining overloads.
+                            return if (confident) arrayOf(targets.first()) else targets
+                        }
                     }
                 }
             }
 
-            if (targets == null) {
-                targets = index.getAnyMemberPsiElements(project, memberName, preferredReceiverType = preferredType)
-            }
-
-            if (targets != null) return targets
-        }
-
-        // `..` chain step: bare method/property name inside (.. root step1 step2 ...)
-        dotDotChainStepContext(sourceElement, index)?.let { (receiverType, memberName) ->
-            val targets = index.getMemberPsiElements(project, receiverType, memberName)
-                ?: index.getAnyMemberPsiElements(project, memberName, preferredReceiverType = receiverType)
-            if (targets != null) return targets
+            index.getAnyMemberPsiElements(project, memberName, preferredReceiverType = preferredType)
+                ?.let { return it }
         }
 
         return null
@@ -238,10 +222,24 @@ object JsInteropNavigation {
         index: JsSymbolIndex,
         packageName: String,
         exportTail: String,
+        anchorFile: com.intellij.psi.PsiFile? = null,
     ): Array<PsiElement>? {
         val exportKey = exportTail.substringBefore('.').substringBefore('/').trim()
         if (exportKey.isEmpty()) return null
-        
+
+        // Member access hanging off an export (`Alias/Export.member`): when the JavaScript
+        // plugin can type-evaluate the export, navigate to the member's real JS declaration.
+        if (anchorFile != null && exportTail.contains('.')) {
+            val memberPath = exportTail.substringAfter('.').split('.')
+                .map { it.substringBefore('/').trim() }.filter { it.isNotEmpty() }
+            if (memberPath.isNotEmpty()) {
+                val parentPath = memberPath.dropLast(1)
+                val target = JsTypeSources.npmExportMembers(anchorFile, packageName, exportKey, parentPath)
+                    ?.firstOrNull { it.name == memberPath.last() }?.navigatable
+                if (target != null) return arrayOf(target)
+            }
+        }
+
         if (!index.isKnownNpmExport(packageName, exportKey)) {
             // Check if it's a member of the default export (common in libraries using export =)
             val defaultType = index.resolveNpmExportType(packageName, "default")
@@ -307,35 +305,28 @@ object JsInteropNavigation {
         
         val index = JsSymbolIndex.getInstance()
 
-        // `..` chain step — bare method/property step at position ≥ 2 in (.. root ...).
-        // Must run before the `when` block because the bare name matches none of the other branches.
-        if (!text.startsWith(".") && '/' !in text && text != "js") {
-            val sym = JsInteropPsi.enclosingEditorSymbol(symbol) ?: symbol
-            val list = sym.parent as? ClList
-            if (list != null) {
-                val ch = list.children.filter {
-                    it !is PsiWhiteSpace && it !is PsiComment && it.text != "(" && it.text != ")"
-                }
-                val rootEl = ch.getOrNull(1)
-                if (ch.isNotEmpty() && ch[0].text == ".." && rootEl != null && sym.textOffset > rootEl.textOffset) {
-                    val chain = dotDotChainStepContext(symbol, index)
-                    return if (chain != null) {
-                        val (receiverType, memberName) = chain
-                        val resolvedMember = index.resolveMember(receiverType, memberName)
-                        val member = resolvedMember?.first
-                        val phys = member?.let { firstMemberPsi(project, index, receiverType, memberName) }
-                        JsSymbolPsiElement(
-                            symbol.manager, symbol.language, memberName,
-                            resolvedMember?.declaringType ?: receiverType,
-                            member?.doc,
-                            member = member,
-                            navigationTarget = phys,
-                        )
-                    } else {
-                        // Chain not fully resolvable — return soft element to suppress "cannot be resolved"
-                        JsSymbolPsiElement(symbol.manager, symbol.language, text, null, null)
-                    }
-                }
+        // Chain step inside (.. root …), (-> root …), (doto root …), etc.
+        // Must run before the `when` block: bare `..` steps match none of the other branches,
+        // and `.name` steps in threading forms would pick the wrong receiver there.
+        InteropChains.stepContext(symbol, index)?.let { ctx ->
+            val receiverType = ctx.receiverType
+            if (receiverType != null) {
+                val resolvedMember = index.resolveMember(receiverType, ctx.memberName)
+                val member = resolvedMember?.first
+                val phys = member?.let { firstMemberPsi(project, index, receiverType, ctx.memberName) }
+                return JsSymbolPsiElement(
+                    symbol.manager, symbol.language, ctx.memberName,
+                    resolvedMember?.declaringType ?: receiverType,
+                    member?.doc,
+                    member = member,
+                    navigationTarget = phys,
+                )
+            }
+            if (!text.startsWith(".")) {
+                // Bare step whose chain can't be resolved — return a soft element to suppress
+                // "cannot be resolved". `.name` steps instead fall through to the dot-member
+                // branch below, which has a sampled any-interface fallback.
+                return JsSymbolPsiElement(symbol.manager, symbol.language, text, null, null)
             }
         }
 

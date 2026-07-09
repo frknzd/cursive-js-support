@@ -13,6 +13,15 @@
     <depends>com.cursiveclojure.cursive</depends>
     <depends optional="true" config-file="javascript-support.xml">JavaScript</depends>
 
+    <extensionPoints>
+        <!-- Optional npm-export type providers; the JavaScript-plugin-backed source registers
+             through javascript-support.xml so core never references JS-plugin classes. -->
+        <extensionPoint
+                qualifiedName="com.cursivejssupport.jsTypeSource"
+                interface="com.cursivejssupport.types.JsTypeSource"
+                dynamic="true"/>
+    </extensionPoints>
+
     <extensions defaultExtensionNs="com.intellij">
         <applicationService
                 serviceImplementation="com.cursivejssupport.settings.JsSupportSettings"/>

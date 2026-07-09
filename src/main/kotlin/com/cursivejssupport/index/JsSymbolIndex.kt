@@ -43,6 +43,15 @@ class JsSymbolIndex {
     /** Member name → up to N sample (declaring interface, first overload) for fast completion when receiver type is unknown. */
     private val memberSamples = ConcurrentHashMap<String, MutableList<Pair<String, JsMember>>>()
 
+    /** Union/intersection type aliases (`BodyInit` → `"Blob|BufferSource|…"`) from the extractor. */
+    private val aliases = ConcurrentHashMap<String, String>()
+
+    /** Package → export name → function overloads (kept for hover; goog namespaces load as packages too). */
+    private val npmExportMembers = ConcurrentHashMap<String, MutableMap<String, List<JsMember>>>()
+
+    /** Package → export name → JSDoc of the export's declaration. */
+    private val npmExportDocs = ConcurrentHashMap<String, MutableMap<String, String>>()
+
     private val _loaded = AtomicBoolean(false)
     val isLoaded: Boolean get() = _loaded.get()
 
@@ -65,6 +74,7 @@ class JsSymbolIndex {
         }
         for ((name, info) in symbols.variables) globals[name] = info
         for ((name, overloads) in symbols.functions) functions.merge(name, overloads) { a, b -> a + b }
+        for ((name, target) in symbols.aliases) aliases.putIfAbsent(name, target)
         rebuildMemberSamples()
     }
 
@@ -85,19 +95,25 @@ class JsSymbolIndex {
             }
             rebuildMemberSamples()
         }
+        for ((name, target) in symbols.aliases) aliases.putIfAbsent(name, target)
 
         val exports = mutableMapOf<String, JsLocation?>()
         val exportTypes = npmExportTypes.computeIfAbsent(packageName) { ConcurrentHashMap() }
+        val exportMembers = npmExportMembers.computeIfAbsent(packageName) { ConcurrentHashMap() }
+        val exportDocs = npmExportDocs.computeIfAbsent(packageName) { ConcurrentHashMap() }
 
         // Extract locations for all exports
         symbols.variables.forEach { (name, info) ->
             exports[name] = info.location
             exportTypes[name] = info.type
+            info.doc?.let { exportDocs[name] = it }
         }
         symbols.functions.forEach { (name, overloads) ->
             exports[name] = overloads.firstOrNull()?.location
             val m = overloads.firstOrNull()
             exportTypes[name] = m?.returns?.takeIf { it.isNotBlank() } ?: "Function"
+            exportMembers[name] = overloads
+            m?.doc?.let { exportDocs[name] = it }
         }
 
         if (exports.isNotEmpty()) {
@@ -181,11 +197,22 @@ class JsSymbolIndex {
         val deduped = dedupeMemberCandidatesByLocation(candidates)
         val sorted = sortMemberCandidates(deduped, preferredReceiverType)
 
-        val out = sorted.mapNotNull { c ->
-            val resolved = resolveLocation(project, c.location) ?: return@mapNotNull null
-            wrapIndexedMember(project, resolved, c.declaringInterface, c.member, c.location)
+        val resolved = sorted.mapNotNull { c ->
+            val el = resolveLocation(project, c.location) ?: return@mapNotNull null
+            c to el
         }
-        return if (out.isNotEmpty()) out.toTypedArray() else null
+        if (resolved.isEmpty()) return null
+        // These are alternatives (the receiver type was unknown or unconfirmed) — number the
+        // rows so the chooser reads "name in Interface (i/N)". A single survivor needs no label.
+        val total = resolved.size
+        val out = resolved.mapIndexed { i, (c, el) ->
+            wrapIndexedMember(
+                project, el, c.declaringInterface, c.member, c.location,
+                ordinal = if (total > 1) i + 1 else null,
+                total = if (total > 1) total else null,
+            )
+        }
+        return out.toTypedArray()
     }
 
     /**
@@ -216,6 +243,27 @@ class JsSymbolIndex {
             }
         }
         return out
+    }
+
+    /**
+     * Every interface that DIRECTLY declares [memberName], with its full overload list. The
+     * doc-oriented twin of [collectMemberCandidates]: members without a PSI location still
+     * document, and there is no inheritance walk — an inherited hit collapses to its direct
+     * declarer anyway, so a single map lookup per interface suffices. Distance is always 0.
+     */
+    fun memberDeclarations(memberName: String): List<JsResolvedMember> {
+        // memberSamples buckets are capped, but the key set is complete — a cheap miss check.
+        if (!memberSamples.containsKey(memberName)) return emptyList()
+        return interfaces.entries.mapNotNull { (typeName, iface) ->
+            iface.members[memberName]?.let { overloads ->
+                JsResolvedMember(
+                    declaringType = typeName,
+                    memberName = memberName,
+                    overloads = overloads,
+                    distance = 0,
+                )
+            }
+        }
     }
 
     /**
@@ -256,10 +304,15 @@ class JsSymbolIndex {
         declaringInterface: String,
         member: JsMember?,
         location: JsLocation?,
+        ordinal: Int? = null,
+        total: Int? = null,
     ): PsiElement {
         val deprecated = member?.doc?.contains("@deprecated", ignoreCase = true) == true
         val mgr = PsiManager.getInstance(project)
-        return JsMemberNavigationTarget(mgr, resolved.language, resolved, declaringInterface, deprecated, location, member)
+        return JsMemberNavigationTarget(
+            mgr, resolved.language, resolved, declaringInterface, deprecated, location, member,
+            ordinal = ordinal, total = total,
+        )
     }
 
     private fun resolveLocation(project: Project, location: JsLocation): PsiElement? {
@@ -341,51 +394,113 @@ class JsSymbolIndex {
 
     /**
      * Resolves a dotted `js/` chain to the resulting TypeScript type name after walking
-     * globals, properties, and method return types (first overload).
-     *
-     * TypeScript emits union/intersection types like `Window&any` or `Node|null` for many
-     * globals and member return types. We strip the extra parts via [canonicalType] so that
-     * interface lookups succeed (the index only stores plain names like `Window` or `Node`).
+     * globals, properties, and method return types (first overload). Canonical-name twin of
+     * [resolveJsChainTypeRef].
      */
-    fun resolveJsChainType(segments: List<String>): String? {
+    fun resolveJsChainType(segments: List<String>): String? =
+        resolveJsChainTypeRef(segments)?.primaryName()?.takeIf { it.isNotEmpty() }
+
+    /**
+     * Generic-aware `js/` chain walk: `js/document.querySelectorAll` resolves to
+     * `NodeListOf<Element>` with its type arguments intact, substituting interface type
+     * parameters (`NodeListOf<T>.item(): T` → `Element`) along the way.
+     */
+    fun resolveJsChainTypeRef(segments: List<String>): JsTypeRef? {
         if (segments.isEmpty()) return null
-        var type = resolveGlobalType(segments[0])?.let { canonicalType(it) }
-            ?: if (resolveFunctions(segments[0]) != null) "Function" else null
+        var type: JsTypeRef = resolveGlobalType(segments[0])?.let { expandAliases(JsTypeRef.parse(it)) }
+            ?: (if (resolveFunctions(segments[0]) != null) JsTypeRef.Named("Function") else null)
             ?: return null
         for (i in 1 until segments.size) {
-            val memberName = segments[i]
-            val member = resolveMember(type, memberName)?.first ?: return null
-            type = canonicalType(when (member.kind) {
-                "method" -> member.returns
-                else -> member.type
-            })
+            val member = resolveMembersOf(type)[segments[i]]?.first ?: return null
+            type = substitute(memberValueType(member), substitutionFor(type))
         }
         return type
     }
 
     /**
-     * Strips TypeScript union (`|`) and intersection (`&`) suffixes so that a raw type like
-     * `Window&any` or `Node|null` maps to the plain interface name the index actually stores.
+     * The single interface name to resolve members against for a raw type string.
      *
-     * Two-pass strategy: prefer a concrete named interface type over JS primitives. This matters
-     * because string-literal union members (e.g. `"absolute" | CSSPositionValue`) now resolve to
-     * `string` rather than `any`, and without the preference pass `string` would shadow
-     * the useful interface type.
-     *
-     * Pass 1: pick first non-primitive, non-trivial part (an interface name).
-     * Pass 2: fall back to first non-trivial part (allows primitive-only unions like `string|number`
-     *         to still yield `string`).
+     * Structured via [JsTypeRef]: union/intersection parts are preferred concrete-interface
+     * first (`"absolute"|CSSPositionValue` → the interface, `string|null` → `string`), generic
+     * args are stripped (`Promise<Response>` → `Promise`), arrays map to `Array` (fixing the
+     * previous `Element[]` dead end), and union/intersection type aliases (`BodyInit`) expand
+     * to their branches first.
      */
     fun canonicalType(rawType: String): String {
-        if ('&' !in rawType && '|' !in rawType) return rawType
-        val parts = rawType.split('&', '|').map { it.trim() }
-        // Pass 1: prefer a concrete interface name over primitives / meta-types.
-        val interfacePart = parts.firstOrNull {
-            it.isNotEmpty() && it !in TRIVIAL_TYPES && it !in PRIMITIVE_TYPES
+        // Fast path: a plain name that isn't an alias maps to itself.
+        if (rawType.none { it in "|&<[(" } && !aliases.containsKey(rawType)) return rawType
+        val name = expandAliases(JsTypeRef.parse(rawType)).primaryName()
+        return name.ifEmpty { rawType }
+    }
+
+    /**
+     * The single member-type projection: a method's return type or a property's type, with
+     * aliases expanded. Every chain walk / display site funnels through here.
+     */
+    fun memberValueType(member: JsMember): JsTypeRef =
+        expandAliases(JsTypeRef.parse(if (member.kind == "method") member.returns else member.type))
+
+    /** Canonical-name twin of [memberValueType]. */
+    fun memberValueTypeName(member: JsMember): String =
+        memberValueType(member).primaryName()
+
+    /**
+     * Generic-aware member resolution: members of the type's preferred interface
+     * ([JsTypeRef.primaryNamed]), falling back to other union branches when the preferred
+     * one is unknown to the index.
+     */
+    fun resolveMembersOf(type: JsTypeRef): Map<String, JsResolvedMember> {
+        val named = type.primaryNamed() ?: return emptyMap()
+        val direct = resolveMembers(named.name)
+        if (direct.isNotEmpty() || type !is JsTypeRef.Union) return direct
+        for (branch in type.leafNameds()) {
+            if (branch.name == named.name) continue
+            val r = resolveMembers(branch.name)
+            if (r.isNotEmpty()) return r
         }
-        if (interfacePart != null) return interfacePart
-        // Pass 2: any non-trivial part (handles `string|null`, `number|undefined`, etc.)
-        return parts.firstOrNull { it.isNotEmpty() && it !in TRIVIAL_TYPES } ?: rawType
+        return direct
+    }
+
+    /**
+     * Type-parameter bindings of a generic instantiation: `NodeListOf<HTMLDivElement>` →
+     * `{T → HTMLDivElement}`. Empty when the type carries no args or the interface declares
+     * no type parameters (legacy indexes).
+     */
+    fun substitutionFor(type: JsTypeRef): Map<String, JsTypeRef> {
+        val named = type.primaryNamed() ?: return emptyMap()
+        if (named.args.isEmpty()) return emptyMap()
+        val params = interfaces[named.name]?.typeParams ?: return emptyMap()
+        if (params.isEmpty()) return emptyMap()
+        return params.zip(named.args).toMap()
+    }
+
+    /** Applies a [substitutionFor] map to free type parameters inside [ref]. */
+    fun substitute(ref: JsTypeRef, substitution: Map<String, JsTypeRef>): JsTypeRef {
+        if (substitution.isEmpty()) return ref
+        return when (ref) {
+            is JsTypeRef.Named ->
+                if (ref.args.isEmpty()) substitution[ref.name] ?: ref
+                else JsTypeRef.Named(ref.name, ref.args.map { substitute(it, substitution) })
+            is JsTypeRef.Union -> JsTypeRef.Union(ref.members.map { substitute(it, substitution) }, ref.intersection)
+            JsTypeRef.Unknown -> ref
+        }
+    }
+
+    /** Expands union/intersection type aliases (`BodyInit` → its branches), cycle-capped. */
+    private fun expandAliases(ref: JsTypeRef, depth: Int = 0): JsTypeRef {
+        if (aliases.isEmpty() || depth > 8) return ref
+        return when (ref) {
+            is JsTypeRef.Named -> {
+                val target = aliases[ref.name]
+                when {
+                    target != null -> expandAliases(JsTypeRef.parse(target), depth + 1)
+                    ref.args.isEmpty() -> ref
+                    else -> JsTypeRef.Named(ref.name, ref.args.map { expandAliases(it, depth + 1) })
+                }
+            }
+            is JsTypeRef.Union -> JsTypeRef.Union(ref.members.map { expandAliases(it, depth + 1) }, ref.intersection)
+            JsTypeRef.Unknown -> ref
+        }
     }
 
     fun allGlobalNames(): Collection<String> = globals.keys
@@ -395,6 +510,14 @@ class JsSymbolIndex {
     /** TypeScript type for an npm export (e.g. `default` → `React.ComponentType`), if known from typings. */
     fun resolveNpmExportType(packageName: String, exportName: String): String? =
         npmExportTypes[packageName]?.get(exportName)
+
+    /** Function overloads for a function-shaped npm/goog export, if the typings carried them. */
+    fun resolveNpmExportMembers(packageName: String, exportName: String): List<JsMember>? =
+        npmExportMembers[packageName]?.get(exportName)
+
+    /** JSDoc attached to an npm/goog export's declaration. */
+    fun resolveNpmExportDoc(packageName: String, exportName: String): String? =
+        npmExportDocs[packageName]?.get(exportName)
     fun hasMemberName(memberName: String): Boolean = memberSamples.containsKey(memberName)
 
     fun getGoogNamespaceNames(): List<String> =
@@ -404,9 +527,6 @@ class JsSymbolIndex {
         (name == "goog" || name.startsWith("goog.")) && npmExports.containsKey(name)
 
     companion object {
-        private val TRIVIAL_TYPES = setOf("any", "null", "undefined", "never", "unknown", "void")
-        private val PRIMITIVE_TYPES = setOf("string", "number", "boolean", "bigint", "symbol", "object")
-
         @JvmStatic fun getInstance(): JsSymbolIndex = service()
     }
 }

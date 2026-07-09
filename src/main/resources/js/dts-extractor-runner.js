@@ -5,7 +5,7 @@ const readline = require('readline').createInterface({ input: process.stdin, crl
 
 function extractSymbols(filesJson) {
     var files = JSON.parse(filesJson);
-    var result = { interfaces: Object.create(null), variables: Object.create(null), functions: Object.create(null) };
+    var result = { interfaces: Object.create(null), variables: Object.create(null), functions: Object.create(null), aliases: Object.create(null) };
     for (var filename in files) {
         if (!Object.prototype.hasOwnProperty.call(files, filename)) continue;
         var sourceFile = ts.createSourceFile(filename, files[filename], ts.ScriptTarget.Latest, true);
@@ -37,31 +37,60 @@ function extractSymbols(filesJson) {
 function jsDocText(node, sourceFile) {
     if (!node || !sourceFile) return null;
     try {
-        function pushCommentText(c) {
-            if (typeof c === 'string' && c.trim()) parts.push(c.trim());
-            else if (c && Array.isArray(c)) {
-                var t = c.map(function (x) { return (x && x.text) ? x.text : ''; }).join('').trim();
-                if (t) parts.push(t);
+        var parts = [];
+        function commentText(c) {
+            if (typeof c === 'string') return c.trim();
+            if (c && Array.isArray(c)) {
+                return c.map(function (x) { return (x && x.text) ? x.text : ''; }).join('').trim();
+            }
+            return '';
+        }
+        function entityText(n) {
+            if (!n) return '';
+            if (n.text) return n.text;
+            if (n.right && n.right.text) return n.right.text;
+            return '';
+        }
+        // Tags keep their tag name (`@param name desc`, `@deprecated reason`, `@example …`) so
+        // the Kotlin side can render structured sections and detect deprecation reliably.
+        function pushTag(t) {
+            if (!t) return;
+            var tagName = t.tagName && t.tagName.text ? t.tagName.text : null;
+            var text = commentText(t.comment);
+            if (!tagName) { if (text) parts.push(text); return; }
+            var line = '@' + tagName;
+            if (tagName === 'param' && t.name) {
+                var pn = entityText(t.name);
+                if (pn) line += ' ' + pn;
+            }
+            if (text) line += ' ' + text;
+            parts.push(line);
+        }
+        function pushEntry(d) {
+            if (!d) return;
+            if (d.tagName) { pushTag(d); return; }
+            var text = commentText(d.comment);
+            if (text) parts.push(text);
+            if (d.tags && d.tags.length) {
+                for (var i = 0; i < d.tags.length; i++) pushTag(d.tags[i]);
             }
         }
-        var parts = [];
-        var tags = typeof ts.getJSDocCommentsAndTags === 'function'
+        var entries = typeof ts.getJSDocCommentsAndTags === 'function'
             ? ts.getJSDocCommentsAndTags(node)
             : null;
-        if (tags && tags.length > 0) {
-            for (var j = 0; j < tags.length; j++) {
-                var d = tags[j];
-                if (!d) continue;
-                pushCommentText(d.comment);
-            }
+        if (entries && entries.length > 0) {
+            for (var j = 0; j < entries.length; j++) pushEntry(entries[j]);
         }
         if (parts.length === 0 && node.jsDoc && node.jsDoc.length) {
-            for (var k = 0; k < node.jsDoc.length; k++) {
-                var jdoc = node.jsDoc[k];
-                if (jdoc) pushCommentText(jdoc.comment);
-            }
+            for (var k = 0; k < node.jsDoc.length; k++) pushEntry(node.jsDoc[k]);
         }
-        var joined = parts.join('\n\n').trim();
+        // getJSDocCommentsAndTags can return both a JSDoc block and its individual tags.
+        var seen = Object.create(null);
+        var unique = [];
+        for (var u = 0; u < parts.length; u++) {
+            if (!seen[parts[u]]) { seen[parts[u]] = true; unique.push(parts[u]); }
+        }
+        var joined = unique.join('\n\n').trim();
         return joined || null;
     } catch (e) {
         return null;
@@ -179,7 +208,7 @@ function collectModuleDeclaration(node, result, filename, sourceFile) {
         if (!Object.prototype.hasOwnProperty.call(result.interfaces, ifaceName)) {
             result.interfaces[ifaceName] = { location: getLocation(node, filename, sourceFile), extends: [], members: Object.create(null) };
         }
-        var subResult = { interfaces: result.interfaces, variables: Object.create(null), functions: Object.create(null) };
+        var subResult = { interfaces: result.interfaces, variables: Object.create(null), functions: Object.create(null), aliases: result.aliases };
         if (node.body && node.body.statements) {
             visitStatements(node.body.statements, subResult, filename, sourceFile);
         }
@@ -218,9 +247,14 @@ function mergeInterface(node, result, filename, sourceFile) {
     var isClass = node.kind === ts.SyntaxKind.ClassDeclaration;
 
     if (!Object.prototype.hasOwnProperty.call(result.interfaces, name)) {
-        result.interfaces[name] = { location: getLocation(node, filename, sourceFile), extends: [], members: Object.create(null) };
+        result.interfaces[name] = { location: getLocation(node, filename, sourceFile), extends: [], typeParams: [], members: Object.create(null) };
     }
     var iface = result.interfaces[name];
+    if (node.typeParameters && node.typeParameters.length > 0 && (!iface.typeParams || iface.typeParams.length === 0)) {
+        iface.typeParams = node.typeParameters.map(function (tp) {
+            return tp.name && tp.name.text ? tp.name.text : 'T';
+        });
+    }
     var bases = extractHeritageNames(node);
     for (var b = 0; b < bases.length; b++) {
         if (iface.extends.indexOf(bases[b]) < 0) iface.extends.push(bases[b]);
@@ -365,8 +399,13 @@ function collectTypeAlias(node, result, filename, sourceFile) {
             result.interfaces[name] = { location: getLocation(node, filename, sourceFile), extends: [baseType], members: Object.create(null) };
         }
     }
-    // Union/intersection aliases (e.g. type BodyInit = Blob | string) are not modelled as interfaces
-    // because we can't pick a single concrete receiver type for member resolution.
+    else if (type.kind === ts.SyntaxKind.UnionType || type.kind === ts.SyntaxKind.IntersectionType) {
+        // Union/intersection aliases (e.g. type BodyInit = Blob | string) can't become a single
+        // interface; record the raw shape so the Kotlin side can expand them per-branch.
+        if (result.aliases) {
+            result.aliases[name] = typeName(type, result);
+        }
+    }
 }
 
 function getLocation(node, filename, sourceFile) {
@@ -392,8 +431,9 @@ function extractParams(params, result) {
     return out;
 }
 
-function typeName(node, result) {
+function typeName(node, result, depth) {
     if (!node) return 'any';
+    depth = depth || 0;
     switch (node.kind) {
         case ts.SyntaxKind.StringKeyword: return 'string';
         case ts.SyntaxKind.NumberKeyword: return 'number';
@@ -409,15 +449,25 @@ function typeName(node, result) {
         case ts.SyntaxKind.SymbolKeyword: return 'symbol';
         case ts.SyntaxKind.TypeReference:
             if (!node.typeName) return 'unknown';
+            var refName;
             // QualifiedName (A.B) — use only the rightmost identifier so it matches our interface table keys.
             if (node.typeName.kind === ts.SyntaxKind.QualifiedName) {
-                return (node.typeName.right && node.typeName.right.text) || 'unknown';
+                refName = (node.typeName.right && node.typeName.right.text) || 'unknown';
+            } else {
+                refName = node.typeName.text || 'unknown';
             }
-            return node.typeName.text || 'unknown';
-        case ts.SyntaxKind.ArrayType: return typeName(node.elementType, result) + '[]';
-        case ts.SyntaxKind.UnionType: return node.types ? node.types.map(function(t) { return typeName(t, result); }).join('|') : 'any';
-        case ts.SyntaxKind.IntersectionType: return node.types ? node.types.map(function(t) { return typeName(t, result); }).join('&') : 'any';
-        case ts.SyntaxKind.ParenthesizedType: return typeName(node.type, result);
+            // Keep generic instantiations (`Promise<Response>`, `NodeListOf<E>`) — the Kotlin
+            // side parses the string form back into a structured type. Depth-capped to keep
+            // pathological nested generics bounded.
+            if (node.typeArguments && node.typeArguments.length > 0 && depth < 3) {
+                var args = node.typeArguments.map(function (t) { return typeName(t, result, depth + 1); });
+                return refName + '<' + args.join(',') + '>';
+            }
+            return refName;
+        case ts.SyntaxKind.ArrayType: return typeName(node.elementType, result, depth + 1) + '[]';
+        case ts.SyntaxKind.UnionType: return node.types ? node.types.map(function(t) { return typeName(t, result, depth + 1); }).join('|') : 'any';
+        case ts.SyntaxKind.IntersectionType: return node.types ? node.types.map(function(t) { return typeName(t, result, depth + 1); }).join('&') : 'any';
+        case ts.SyntaxKind.ParenthesizedType: return typeName(node.type, result, depth);
         case ts.SyntaxKind.TypeLiteral: return 'object';
         case ts.SyntaxKind.FunctionType: return 'Function';
         case ts.SyntaxKind.ConstructorType: return 'Function';
@@ -436,7 +486,7 @@ function typeName(node, result) {
         case ts.SyntaxKind.TemplateLiteralType: return 'string';
         case ts.SyntaxKind.TypeOperator:
             // `readonly T` → unwrap to T; `keyof T` / `unique symbol` → any
-            if (node.operator === ts.SyntaxKind.ReadonlyKeyword) return typeName(node.type, result);
+            if (node.operator === ts.SyntaxKind.ReadonlyKeyword) return typeName(node.type, result, depth);
             return 'any';
         case ts.SyntaxKind.TypePredicate: // `x is T` — returns boolean at runtime; the narrowed type is a TypeScript-only concept
             return 'boolean';

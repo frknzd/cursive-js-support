@@ -14,9 +14,8 @@ fun ParsedSymbols.withLogicalBundledLibPaths(): ParsedSymbols {
     fun mapMember(m: JsMember): JsMember = m.copy(location = mapLoc(m.location))
 
     val ifaces = interfaces.mapValues { (_, iface) ->
-        JsInterface(
+        iface.copy(
             location = mapLoc(iface.location),
-            extends = iface.extends,
             members = iface.members.mapValues { (_, overloads) ->
                 overloads.map { mapMember(it) }
             }
@@ -31,5 +30,5 @@ fun ParsedSymbols.withLogicalBundledLibPaths(): ParsedSymbols {
         overloads.map { mapMember(it) }
     }
 
-    return ParsedSymbols(interfaces = ifaces, variables = vars, functions = funcs)
+    return copy(interfaces = ifaces, variables = vars, functions = funcs)
 }
