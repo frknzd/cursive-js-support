@@ -116,16 +116,20 @@ class JsInteropHighlightFilter : HighlightInfoFilter {
         }
 
         // 3d. Bare method/property step inside chain forms — (.. root …), (-> root …), etc.
-        // Only suppress when the member actually resolves on the inferred receiver type, so
-        // genuine typos like `(-> x (my-fnn))` keep their highlight.
+        // Suppress when the member actually resolves on the inferred receiver type, so
+        // genuine typos like `(-> x (my-fnn))` keep their highlight. When the receiver type
+        // can't be inferred at all (e.g. an untyped fn param), mirror the navigation fallback
+        // in JsInteropNavigation.resolveClSymbol and suppress rather than false-positive.
         if (!text.startsWith(".") && '/' !in text && index.isLoaded) {
             val elementAtOffset = file.findElementAt(start)
             val sym = PsiTreeUtil.getParentOfType(elementAtOffset, ClEditorSymbol::class.java, false)
             if (sym != null) {
                 val ctx = InteropChains.stepContext(sym, index)
-                val receiverType = ctx?.receiverType
-                if (receiverType != null && index.resolveMember(receiverType, ctx.memberName) != null) {
-                    return false
+                if (ctx != null) {
+                    val receiverType = ctx.receiverType
+                    if (receiverType == null || index.resolveMember(receiverType, ctx.memberName) != null) {
+                        return false
+                    }
                 }
             }
         }
