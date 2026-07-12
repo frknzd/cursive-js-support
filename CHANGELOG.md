@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+## [1.0.1]
+
+- Fixed IntelliJ IDEA startup by assigning unique inspection identities to the Clojure and
+  ClojureScript registrations.
+
 ## [1.0.0]
 
 - Consolidated npm semantics behind one project service, published immutable index snapshots,

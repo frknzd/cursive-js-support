@@ -48,12 +48,12 @@
 
         <localInspection
                 language="Clojure"
-                shortName="ClojureScriptJsInterop"
+                shortName="ClojureJsInterop"
                 displayName="ClojureScript JavaScript interop"
                 groupName="ClojureScript"
                 enabledByDefault="true"
                 level="WARNING"
-                implementationClass="com.cursivejssupport.inspection.JsInteropInspection"/>
+                implementationClass="com.cursivejssupport.inspection.ClojureJsInteropInspection"/>
 
         <intentionAction>
             <language>Clojure</language>

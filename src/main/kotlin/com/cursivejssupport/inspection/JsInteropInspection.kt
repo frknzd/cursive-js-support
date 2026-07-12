@@ -21,7 +21,7 @@ import com.intellij.psi.PsiElementVisitor
 import cursive.psi.api.ClList
 import cursive.psi.impl.symbols.ClEditorSymbol
 
-class JsInteropInspection : LocalInspectionTool() {
+open class JsInteropInspection : LocalInspectionTool() {
 
     override fun getShortName(): String = "ClojureScriptJsInterop"
 
@@ -210,6 +210,11 @@ class JsInteropInspection : LocalInspectionTool() {
         )
     }
 
+}
+
+/** Separate IntelliJ inspection identity for `.clj` and `.cljc` files. */
+class ClojureJsInteropInspection : JsInteropInspection() {
+    override fun getShortName(): String = "ClojureJsInterop"
 }
 
 class ReplaceInteropSymbolFix(private val oldText: String, private val newText: String) : LocalQuickFix {
