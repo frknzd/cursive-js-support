@@ -4,6 +4,7 @@ import com.cursivejssupport.index.JsSymbolIndex
 import com.cursivejssupport.npm.NsAliasResolver
 import com.cursivejssupport.util.JsInteropPsi
 import com.intellij.codeInsight.completion.CompletionConfidence
+import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.util.TextRange
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
@@ -26,8 +27,8 @@ import kotlin.math.min
  */
 class JsInteropCompletionConfidence : CompletionConfidence() {
 
-    @Deprecated("Deprecated in Java")
     override fun shouldSkipAutopopup(
+        editor: Editor,
         contextElement: PsiElement,
         psiFile: PsiFile,
         offset: Int,

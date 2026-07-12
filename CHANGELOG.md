@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+## [0.6.2]
+### Fixed
+- Use the current editor-aware completion-confidence API instead of the deprecated `CompletionConfidence.shouldSkipAutopopup(PsiElement, PsiFile, Int)` overload.
+- Limit this stable build to IntelliJ Platform 261, matching its mandatory stable Cursive dependency and preventing invalid compatibility checks against 262.
+
 ## [0.5.4]
 ### Added
 - Chain-macro support beyond `..`: `->`, `->>`, `some->`, `some->>`, `doto`, `cond->`, `cond->>` now get type-aware completion, goto-declaration, hover, and false-positive suppression — including list steps like `(-> el (.setAttribute "x" "1"))` (`->>` correctly treats the threaded value as the *last* argument).
@@ -16,5 +21,4 @@
 - Optional IntelliJ JavaScript type-evaluation bridge for npm exports (completion members, hover signatures, navigation to real JS declarations) behind a new settings toggle; degrades gracefully to the bundled index when the JS plugin is absent.
 
 ### Changed
-- Remove the `until-build` upper bound so the plugin stays available on all current and future IDE builds (including 2026.2 / 262).
 - Regenerated the bundled browser symbol index with generic type arguments, interface type parameters, union aliases, and tag-prefixed JSDoc (`@deprecated` detection is now reliable).

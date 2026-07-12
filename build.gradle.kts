@@ -14,7 +14,7 @@ intellijPlatform {
 }
 
 group = "com.cursivejssupport"
-version = "0.6.1"
+version = "0.6.2"
 
 repositories {
     mavenCentral()
@@ -43,8 +43,10 @@ kotlin {
 tasks {
     patchPluginXml {
         sinceBuild.set("261")
-        // No upper bound: keep the plugin available on all future IDE builds.
-        untilBuild.unset()
+        // Cursive is mandatory, so do not advertise IDE builds unsupported by the
+        // stable Cursive dependency. Publish a separate 262 build once Cursive 262
+        // is available on the same Marketplace channel.
+        untilBuild.set("261.*")
     }
 }
 
