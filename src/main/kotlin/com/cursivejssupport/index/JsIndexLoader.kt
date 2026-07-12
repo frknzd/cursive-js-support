@@ -76,7 +76,7 @@ object JsIndexLoader {
                 }
                 count++
                 try {
-                    index.loadNpmPackage(pkg.packageName, parser.parse(pkg.files))
+                    index.loadNpmPackage(pkg.packageName, parser.parse(pkg.files, pkg.entryFiles))
                     loaded++
                 } catch (e: Exception) {
                     log.warn("Cursive JS Support: skipping ${pkg.packageName} — ${e.message}")

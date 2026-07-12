@@ -35,4 +35,49 @@ class NpmPackageResolverTypingsWalkTest {
             repo.deleteRecursively()
         }
     }
+
+    @Test
+    fun `at types provider resolves public package subpath`() {
+        val repo = Files.createTempDirectory("npm-walk").toFile()
+        try {
+            File(repo, "package.json").writeText("""{"dependencies":{"react":"*"}}""")
+            File(repo, "node_modules/react").mkdirs()
+            val types = File(repo, "node_modules/@types/react").apply { mkdirs() }
+            File(types, "package.json").writeText(
+                """{"name":"@types/react","exports":{".":{"types":"./index.d.ts"},"./jsx-runtime":{"types":"./jsx-runtime.d.ts"}}}""",
+            )
+            File(types, "index.d.ts").writeText("export = React\n")
+            File(types, "jsx-runtime.d.ts").writeText("export function jsx(): unknown\n")
+
+            val resolver = NpmPackageResolver(repo, JsSupportSettings.State())
+            assertEquals(
+                File(types, "jsx-runtime.d.ts"),
+                resolver.typingsEntryFile("react/jsx-runtime"),
+            )
+        } finally {
+            repo.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `javascript only package exposes every conditional entry`() {
+        val repo = Files.createTempDirectory("npm-walk").toFile()
+        try {
+            File(repo, "package.json").writeText("""{"dependencies":{"plain-js":"*"}}""")
+            val pkg = File(repo, "node_modules/plain-js").apply { mkdirs() }
+            File(pkg, "package.json").writeText(
+                """{"name":"plain-js","exports":{".":{"import":"./index.mjs","require":"./index.cjs"}}}""",
+            )
+            File(pkg, "index.mjs").writeText("export const esmOnly = true\n")
+            File(pkg, "index.cjs").writeText("exports.cjsOnly = true\n")
+
+            val resolved = NpmPackageResolver(repo, JsSupportSettings.State()).resolvePackage("plain-js")!!
+            assertEquals(
+                setOf(File(pkg, "index.mjs").absolutePath, File(pkg, "index.cjs").absolutePath),
+                resolved.entryFiles.toSet(),
+            )
+        } finally {
+            repo.deleteRecursively()
+        }
+    }
 }

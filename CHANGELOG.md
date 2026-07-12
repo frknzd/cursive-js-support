@@ -4,13 +4,19 @@
 
 ## [Unreleased]
 
-## [1.0.1]
-
-- Fixed IntelliJ IDEA startup by assigning unique inspection identities to the Clojure and
-  ClojureScript registrations.
-
 ## [1.0.0]
 
+- Added condition-aware multi-entry npm resolution that merges `import`, `require`, `browser`,
+  `node`, `react-server`, and custom condition surfaces, with deterministic JavaScript-source
+  analysis when a package has no declarations.
+- Replaced syntax-only npm export fallback with TypeScript module-checker semantics for barrel
+  re-exports, declaration merging, callable namespaces, classes, constructors, ESM/CommonJS,
+  `.d.cts`/`.d.mts`, public subpaths, and type-only export filtering.
+- Added a pinned 20-package compatibility corpus covering 3,231 runtime exports and the completion,
+  hover, parameter information, member, documentation, and navigation data derived from them.
+- Fixed false "has no export" diagnostics for packages such as `diff` whose complete named API is
+  declared in TypeScript while IntelliJ exposes only a partial CommonJS runtime export list.
+- Assigned unique inspection identities to the Clojure and ClojureScript registrations.
 - Consolidated npm semantics behind one project service, published immutable index snapshots,
   extracted the reusable type graph and Clojure PSI helpers, and unified browser/Node debug
   override and process lifecycle code. Added a fail-fast Detekt gate and data-driven browser

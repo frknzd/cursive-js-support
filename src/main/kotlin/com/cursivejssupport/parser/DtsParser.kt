@@ -55,7 +55,9 @@ data class ParsedSymbols(
     val variables:  Map<String, JsVariableInfo> = emptyMap(),
     val functions:  Map<String, List<JsMember>> = emptyMap(),
     /** Union/intersection type aliases (`BodyInit` → `"Blob|BufferSource|…"`); empty for legacy indexes. */
-    val aliases:    Map<String, String>         = emptyMap()
+    val aliases:    Map<String, String>         = emptyMap(),
+    /** Runtime exports of an external module; null means a global declaration file. */
+    val moduleExports: Set<String>? = null,
 )
 
 // ─── Parser ───────────────────────────────────────────────────────────────────
@@ -80,8 +82,8 @@ class DtsParser(nodeExecutable: String) : AutoCloseable {
         reader = process.inputStream.bufferedReader(Charsets.UTF_8)
     }
 
-    fun parse(files: Map<String, String>): ParsedSymbols {
-        val inputJson = mapper.writeValueAsString(files)
+    fun parse(files: Map<String, String>, roots: Collection<String> = files.keys): ParsedSymbols {
+        val inputJson = mapper.writeValueAsString(mapOf("files" to files, "roots" to roots))
         writer.write(inputJson)
         writer.newLine()
         writer.flush()

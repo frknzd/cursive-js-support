@@ -1,146 +1,161 @@
 package com.cursivejssupport.npm
 
 import com.fasterxml.jackson.databind.JsonNode
+import com.fasterxml.jackson.databind.node.ObjectNode
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import java.io.File
 
-/**
- * Resolves the path to a package's primary `.d.ts` from `package.json` and on-disk layout
- * (handles `types`, `typings`, string `exports`, conditional `exports`, and root `index.d.ts`).
- */
+/** Resolves every declaration or runtime entry applicable to a package request. */
 internal object NpmPackageTypings {
-
     private val mapper = jacksonObjectMapper()
+    private val declarationSuffixes = listOf(".d.ts", ".d.cts", ".d.mts")
+    private val runtimeSuffixes = listOf(".js", ".mjs", ".cjs", ".jsx")
 
-    fun typingsEntryRelativePath(pkgDir: File, subpath: String? = null): String? {
-        return try {
-            val pkgJsonFile = File(pkgDir, "package.json")
-            if (!pkgJsonFile.isFile) {
-                null
+    fun typingsEntryRelativePath(pkgDir: File, subpath: String? = null): String? =
+        typingsEntryRelativePaths(pkgDir, subpath).firstOrNull()
+
+    fun typingsEntryRelativePaths(pkgDir: File, subpath: String? = null): List<String> = runCatching {
+        packageJson(pkgDir) { root -> buildSet {
+            if (subpath.isNullOrBlank()) {
+                addTextPath(root, "types", pkgDir)
+                addTextPath(root, "typings", pkgDir)
             } else {
-                val root = mapper.readTree(pkgJsonFile)
-
-                if (!subpath.isNullOrBlank()) {
-                    typesFromVersions(root.get("typesVersions"), subpath, pkgDir)
-                        ?: typesFromExportsField(root.get("exports"), pkgDir, "./$subpath")
-                        ?: directSubpathTypes(subpath, pkgDir)
-                } else root.path("types").takeIf { it.isTextual }?.asText()?.trim()?.takeIf { it.isNotEmpty() }
-                    ?.let { normalizeTypesRelativePath(it) }
-                    ?.takeIf { File(pkgDir, it).isFile }
-                    ?: root.path("typings").takeIf { it.isTextual }?.asText()?.trim()?.takeIf { it.isNotEmpty() }
-                        ?.let { normalizeTypesRelativePath(it) }
-                        ?.takeIf { File(pkgDir, it).isFile }
-                    ?: typesFromExportsField(root.get("exports"), pkgDir, ".")
-                    ?: "index.d.ts".takeIf { File(pkgDir, "index.d.ts").isFile }
+                addAll(typesVersionPaths(root.path("typesVersions"), subpath, pkgDir))
             }
-        } catch (_: Exception) {
-            null
+            selectedExportEntries(root.get("exports"), requestedKey(subpath)).forEach { entry ->
+                collectDeclarationPaths(entry, pkgDir, this)
+            }
+            if (isEmpty()) addAll(directDeclarationPaths(pkgDir, subpath))
+        }.toList() }
+    }.getOrDefault(emptyList())
+
+    fun runtimeEntryRelativePaths(pkgDir: File, subpath: String? = null): List<String> = runCatching {
+        packageJson(pkgDir) { root -> buildSet {
+            selectedExportEntries(root.get("exports"), requestedKey(subpath)).forEach { entry ->
+                collectRuntimePaths(entry, pkgDir, this)
+            }
+            if (subpath.isNullOrBlank()) {
+                listOf("module", "main", "browser").forEach { addTextRuntimePath(root, it, pkgDir) }
+            } else {
+                runtimeSuffixes.forEach { suffix ->
+                    normalize(subpath + suffix).takeIf { File(pkgDir, it).isFile }?.let(::add)
+                }
+                normalize("$subpath/index.js").takeIf { File(pkgDir, it).isFile }?.let(::add)
+            }
+        }.toList() }
+    }.getOrDefault(emptyList())
+
+    private fun <T> packageJson(pkgDir: File, block: (JsonNode) -> T): T {
+        val file = File(pkgDir, "package.json")
+        require(file.isFile) { "Missing package.json in ${pkgDir.path}" }
+        return block(mapper.readTree(file))
+    }
+
+    private fun requestedKey(subpath: String?) = subpath?.takeIf(String::isNotBlank)?.let { "./$it" } ?: "."
+
+    private fun MutableSet<String>.addTextPath(root: JsonNode, field: String, pkgDir: File) {
+        root.path(field).takeIf(JsonNode::isTextual)?.asText()?.let(::normalize)
+            ?.takeIf { File(pkgDir, it).isFile && isDeclaration(it) }
+            ?.let(::add)
+    }
+
+    private fun MutableSet<String>.addTextRuntimePath(root: JsonNode, field: String, pkgDir: File) {
+        root.path(field).takeIf(JsonNode::isTextual)?.asText()?.let(::normalize)
+            ?.takeIf { File(pkgDir, it).isFile && isRuntime(it) }
+            ?.let(::add)
+    }
+
+    private fun selectedExportEntries(exports: JsonNode?, key: String): List<JsonNode> {
+        if (exports == null || exports.isNull || exports.isMissingNode) return emptyList()
+        if (!exports.isObject) return if (key == ".") listOf(exports) else emptyList()
+        val fields = exports.fields().asSequence().toList()
+        val isSubpathMap = fields.any { it.key.startsWith(".") }
+        if (!isSubpathMap) return if (key == ".") listOf(exports) else emptyList()
+        exports.get(key)?.let { return listOf(it) }
+        return fields.mapNotNull { (pattern, entry) -> matchPattern(pattern, key)?.let { replaceStar(entry, it) } }
+    }
+
+    private fun matchPattern(pattern: String, requested: String): String? {
+        if ('*' !in pattern) return null
+        val prefix = pattern.substringBefore('*')
+        val suffix = pattern.substringAfter('*')
+        return requested.takeIf { it.startsWith(prefix) && it.endsWith(suffix) }
+            ?.removePrefix(prefix)?.removeSuffix(suffix)
+    }
+
+    private fun collectDeclarationPaths(node: JsonNode, pkgDir: File, output: MutableSet<String>) {
+        when {
+            node.isTextual -> declarationFor(node.asText(), pkgDir)?.let(output::add)
+            node.isArray -> node.forEach { collectDeclarationPaths(it, pkgDir, output) }
+            node.isObject -> node.fields().forEachRemaining { collectDeclarationPaths(it.value, pkgDir, output) }
         }
     }
 
-    private fun normalizeTypesRelativePath(p: String): String =
-        p.trim().removePrefix("./")
-
-    private fun typesFromExportsField(exports: JsonNode?, pkgDir: File, requestedKey: String): String? {
-        if (exports == null || exports.isMissingNode || exports.isNull) return null
-        return when {
-            exports.isTextual && requestedKey == "." ->
-                dtsBesideJavaScriptExport(exports.asText(), pkgDir)
-            exports.isObject -> {
-                typesFromSingleExportEntry(exports[requestedKey], pkgDir)
-                    ?: exports.fields().asSequence().mapNotNull { (pattern, entry) ->
-                        if (!pattern.contains('*')) return@mapNotNull null
-                        val prefix = pattern.substringBefore('*')
-                        val suffix = pattern.substringAfter('*')
-                        if (!requestedKey.startsWith(prefix) || !requestedKey.endsWith(suffix)) return@mapNotNull null
-                        val capture = requestedKey.removePrefix(prefix).removeSuffix(suffix)
-                        typesFromSingleExportEntry(replaceStar(entry, capture), pkgDir)
-                    }.firstOrNull()
-            }
-            else -> null
+    private fun collectRuntimePaths(node: JsonNode, pkgDir: File, output: MutableSet<String>) {
+        when {
+            node.isTextual -> normalize(node.asText()).takeIf { isRuntime(it) && File(pkgDir, it).isFile }?.let(output::add)
+            node.isArray -> node.forEach { collectRuntimePaths(it, pkgDir, output) }
+            node.isObject -> node.fields().forEachRemaining { collectRuntimePaths(it.value, pkgDir, output) }
         }
     }
 
-    private fun typesFromVersions(typesVersions: JsonNode?, subpath: String, pkgDir: File): String? {
-        if (typesVersions == null || !typesVersions.isObject) return null
-        for (versionEntry in typesVersions) {
+    private fun declarationFor(path: String, pkgDir: File): String? {
+        val relative = normalize(path)
+        if (isDeclaration(relative)) return relative.takeIf { File(pkgDir, it).isFile }
+        if (!isRuntime(relative)) return null
+        val base = relative.substringBeforeLast('.')
+        return declarationSuffixes.asSequence().map { base + it }.firstOrNull { File(pkgDir, it).isFile }
+    }
+
+    private fun directDeclarationPaths(pkgDir: File, subpath: String?): List<String> {
+        val base = subpath?.takeIf(String::isNotBlank) ?: "index"
+        return buildList {
+            declarationSuffixes.forEach { suffix ->
+                normalize(base + suffix).takeIf { File(pkgDir, it).isFile }?.let(::add)
+            }
+            declarationSuffixes.forEach { suffix ->
+                normalize("$base/index$suffix").takeIf { File(pkgDir, it).isFile }?.let(::add)
+            }
+        }
+    }
+
+    private fun typesVersionPaths(node: JsonNode, subpath: String, pkgDir: File): List<String> {
+        if (!node.isObject) return emptyList()
+        val output = mutableListOf<String>()
+        for (versionEntry in node) {
             if (!versionEntry.isObject) continue
-            for ((pattern, targets) in versionEntry.fields().asSequence().map { it.key to it.value }) {
+            for ((pattern, targets) in versionEntry.fields().asSequence()) {
                 val capture = when {
                     pattern == subpath -> ""
                     pattern == "*" -> subpath
-                    pattern.contains('*') && subpath.startsWith(pattern.substringBefore('*')) &&
-                        subpath.endsWith(pattern.substringAfter('*')) ->
-                        subpath.removePrefix(pattern.substringBefore('*')).removeSuffix(pattern.substringAfter('*'))
-                    else -> continue
+                    else -> matchPattern(pattern, subpath) ?: continue
                 }
                 val candidates = if (targets.isArray) targets.toList() else listOf(targets)
-                for (candidate in candidates) {
-                    if (!candidate.isTextual) continue
-                    val rel = normalizeTypesRelativePath(candidate.asText().replace("*", capture))
-                    resolveDtsCandidate(pkgDir, rel)?.let { return it }
+                candidates.filter(JsonNode::isTextual).forEach { target ->
+                    val relative = normalize(target.asText().replace("*", capture))
+                    resolveDeclarationCandidate(pkgDir, relative)?.let(output::add)
                 }
             }
         }
-        return null
+        return output
     }
 
-    private fun directSubpathTypes(subpath: String, pkgDir: File): String? =
-        listOf("$subpath.d.ts", "$subpath/index.d.ts").firstOrNull { File(pkgDir, it).isFile }
-
-    private fun resolveDtsCandidate(pkgDir: File, rel: String): String? = when {
-        File(pkgDir, rel).isFile -> rel
-        File(pkgDir, "$rel.d.ts").isFile -> "$rel.d.ts"
-        File(pkgDir, "$rel/index.d.ts").isFile -> "$rel/index.d.ts"
-        else -> null
+    private fun resolveDeclarationCandidate(pkgDir: File, path: String): String? {
+        val candidates = mutableListOf(path)
+        declarationSuffixes.mapTo(candidates) { path + it }
+        declarationSuffixes.mapTo(candidates) { "$path/index$it" }
+        return candidates.firstOrNull { File(pkgDir, it).isFile }
     }
 
     private fun replaceStar(node: JsonNode, capture: String): JsonNode {
         if (node.isTextual) return mapper.nodeFactory.textNode(node.asText().replace("*", capture))
         if (!node.isObject) return node
-        val copy = node.deepCopy<com.fasterxml.jackson.databind.node.ObjectNode>()
-        copy.fields().forEachRemaining { entry -> copy.set<JsonNode>(entry.key, replaceStar(entry.value, capture)) }
-        return copy
-    }
-
-    private fun typesFromSingleExportEntry(entry: JsonNode?, pkgDir: File): String? {
-        if (entry == null || entry.isMissingNode || entry.isNull) return null
-        return when {
-            entry.isTextual ->
-                dtsBesideJavaScriptExport(entry.asText(), pkgDir)
-            entry.isObject -> {
-                entry.path("types").takeIf { it.isTextual }?.asText()?.trim()?.takeIf { it.isNotEmpty() }
-                    ?.let { normalizeTypesRelativePath(it) }
-                    ?.takeIf { File(pkgDir, it).isFile }
-                    ?: dtsBesideJavaScriptExport(
-                        entry.path("import").takeIf { it.isTextual }?.asText()
-                            ?: entry.path("require").takeIf { it.isTextual }?.asText()
-                            ?: entry.path("default").takeIf { it.isTextual }?.asText(),
-                        pkgDir,
-                    )
-                    ?: entry.fields().asSequence().mapNotNull { (_, nested) ->
-                        typesFromSingleExportEntry(nested, pkgDir)
-                    }.firstOrNull()
-            }
-            entry.isArray -> entry.asSequence().mapNotNull { typesFromSingleExportEntry(it, pkgDir) }.firstOrNull()
-            else -> null
+        return node.deepCopy<ObjectNode>().also { copy ->
+            copy.fields().forEachRemaining { (key, value) -> copy.set<JsonNode>(key, replaceStar(value, capture)) }
         }
     }
 
-    private fun dtsBesideJavaScriptExport(jsOrDtsPath: String?, pkgDir: File): String? {
-        if (jsOrDtsPath.isNullOrBlank()) return null
-        val rel = normalizeTypesRelativePath(jsOrDtsPath)
-        if (rel.endsWith(".d.ts", ignoreCase = true)) {
-            return rel.takeIf { File(pkgDir, it).isFile }
-        }
-        if (rel.endsWith(".js", ignoreCase = true) ||
-            rel.endsWith(".mjs", ignoreCase = true) ||
-            rel.endsWith(".cjs", ignoreCase = true)
-        ) {
-            val base = rel.substringBeforeLast('.')
-            val candidate = "$base.d.ts"
-            return candidate.takeIf { File(pkgDir, it).isFile }
-        }
-        return null
-    }
+    private fun normalize(path: String) = path.trim().removePrefix("./")
+    private fun isDeclaration(path: String) = declarationSuffixes.any(path::endsWith)
+    private fun isRuntime(path: String) = runtimeSuffixes.any(path::endsWith)
 }

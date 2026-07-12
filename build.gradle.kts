@@ -22,7 +22,7 @@ intellijPlatform {
 }
 
 group = "com.cursivejssupport"
-version = "1.0.1"
+version = "1.0.0"
 
 repositories {
     mavenCentral()
@@ -58,6 +58,14 @@ detekt {
 }
 
 tasks {
+    test {
+        inputs.files(
+            "test-fixtures/npm-interop-corpus/package-lock.json",
+            "test-fixtures/npm-interop-corpus/reference-report.cjs",
+            "test-fixtures/npm-interop-corpus/node_modules/.package-lock.json",
+        )
+    }
+
     patchPluginXml {
         sinceBuild.set("261")
         // Cursive is mandatory, so do not advertise IDE builds unsupported by the
@@ -73,4 +81,10 @@ tasks.register<JavaExec>("generateBrowserSymbolsIndex") {
     classpath = sourceSets.getByName("main").runtimeClasspath
     mainClass.set("com.cursivejssupport.tools.GenerateIndexKt")
     workingDir = rootDir
+}
+
+tasks.register("npmInteropAudit") {
+    group = "verification"
+    description = "Compare npm completion, hover, signatures, members, and navigation data with TypeScript."
+    dependsOn("test")
 }

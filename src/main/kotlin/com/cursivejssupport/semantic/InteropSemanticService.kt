@@ -31,8 +31,8 @@ class InteropSemanticService {
     fun exports(file: PsiFile, packageName: String): List<SemanticExport> {
         val live = file.project.service<IntellijNpmResolutionService>().resolveExports(file, packageName)
             .mapNotNull { element -> (element as? JSNamedElement)?.name?.let { SemanticExport(it, element) } }
-        if (live.isNotEmpty()) return live
-        return JsSymbolIndex.getInstance(file.project).npmExportNames(packageName).map { SemanticExport(it, null) }
+        val indexed = JsSymbolIndex.getInstance(file.project).npmExportNames(packageName)
+        return mergeSemanticExports(live, indexed)
     }
 
     fun exportNames(file: PsiFile, packageName: String): List<String> =
@@ -73,3 +73,12 @@ class InteropSemanticService {
         name = name, kind = kind, params = params, returns = returns, type = type, doc = doc,
     )
 }
+
+/** Keeps live declaration targets without allowing a partial IDE result to hide indexed exports. */
+internal fun mergeSemanticExports(
+    live: List<SemanticExport>,
+    indexedNames: Collection<String>,
+): List<SemanticExport> = buildMap<String, SemanticExport> {
+    indexedNames.forEach { put(it, SemanticExport(it, null)) }
+    live.forEach { put(it.name, it) }
+}.values.toList()

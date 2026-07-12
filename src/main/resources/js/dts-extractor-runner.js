@@ -4,13 +4,20 @@ const ts = require('./typescript.js');
 const readline = require('readline').createInterface({ input: process.stdin, crlfDelay: Infinity });
 
 function extractSymbols(filesJson) {
-    var files = JSON.parse(filesJson);
-    var result = { interfaces: Object.create(null), variables: Object.create(null), functions: Object.create(null), aliases: Object.create(null) };
+    var payload = JSON.parse(filesJson);
+    var files = payload.files || payload;
+    var roots = payload.roots || Object.keys(files);
+    var result = { interfaces: Object.create(null), variables: Object.create(null), functions: Object.create(null), aliases: Object.create(null), moduleExports: null };
     for (var filename in files) {
         if (!Object.prototype.hasOwnProperty.call(files, filename)) continue;
         var sourceFile = ts.createSourceFile(filename, files[filename], ts.ScriptTarget.Latest, true);
         visitStatements(sourceFile.statements, result, filename, sourceFile);
     }
+
+    // For external modules, use the TypeScript checker to compute the public value surface.
+    // A syntax walk cannot follow `export *`, alias chains, declaration merging, or `export =`.
+    // Keeping this in the deterministic fallback makes its export semantics match JS/TS tooling.
+    extractCheckedModuleExports(files, roots, result);
     
     // Post-process: If we have a 'default' export that is 'any' or just an identifier,
     // and we also have many top-level functions/variables, libraries often intend those
@@ -32,6 +39,216 @@ function extractSymbols(filesJson) {
     }
 
     return JSON.stringify(result);
+}
+
+function extractCheckedModuleExports(files, roots, result) {
+    if (roots.length === 0) return;
+    var options = {
+        allowJs: true,
+        checkJs: true,
+        module: ts.ModuleKind.NodeNext,
+        moduleResolution: ts.ModuleResolutionKind.NodeNext,
+        target: ts.ScriptTarget.Latest,
+        skipLibCheck: true
+    };
+    var host = ts.createCompilerHost(options);
+    var originalFileExists = host.fileExists.bind(host);
+    var originalReadFile = host.readFile.bind(host);
+    host.fileExists = function (name) {
+        return Object.prototype.hasOwnProperty.call(files, name) || originalFileExists(name);
+    };
+    host.readFile = function (name) {
+        return Object.prototype.hasOwnProperty.call(files, name) ? files[name] : originalReadFile(name);
+    };
+    host.getSourceFile = function (name, languageVersion) {
+        var text = host.readFile(name);
+        return text === undefined ? undefined : ts.createSourceFile(name, text, languageVersion, true);
+    };
+
+    var program = ts.createProgram(roots, options, host);
+    var checker = program.getTypeChecker();
+    var seen = Object.create(null);
+    roots.forEach(function (root) {
+        var source = program.getSourceFile(root);
+        if (!source) return;
+        var moduleSymbol = checker.getSymbolAtLocation(source);
+        if (!moduleSymbol) return;
+        if (result.moduleExports === null) result.moduleExports = [];
+
+        var exportEquals = moduleSymbol.exports && moduleSymbol.exports.get('export=');
+        var exportEqualsTarget = exportEquals && checkedTarget(exportEquals, checker);
+        var exportEqualsDeclaration = exportEqualsTarget &&
+            (exportEqualsTarget.valueDeclaration || (exportEqualsTarget.declarations && exportEqualsTarget.declarations[0]));
+        if (exportEquals) {
+            // The checker includes type-support declarations from a merged namespace in
+            // getExportsOfModule (for example Lodash's private uniqueSymbol). Runtime named
+            // access is exactly the property surface of the exported CommonJS value.
+            addCheckedExport('default', exportEquals, checker, result, seen);
+            var exportEqualsType = checker.getTypeOfSymbolAtLocation(exportEqualsTarget, exportEqualsDeclaration);
+            checker.getPropertiesOfType(exportEqualsType).filter(function (property) {
+                return belongsToExportedType(property, exportEqualsType, checker);
+            }).forEach(function (property) {
+                addCheckedExport(property.getName(), property, checker, result, seen, exportEqualsDeclaration);
+            });
+        } else {
+            checker.getExportsOfModule(moduleSymbol).forEach(function (symbol) {
+                addCheckedExport(symbol.getName(), symbol, checker, result, seen, exportEqualsDeclaration);
+            });
+        }
+    });
+}
+
+function belongsToExportedType(property, type, checker) {
+    if (!property.parent || !property.parent.getName || !type.symbol) return true;
+    var allowed = Object.create(null);
+    function collect(current) {
+        if (!current) return;
+        if (current.symbol && current.symbol.getName) allowed[current.symbol.getName()] = true;
+        if (current.getBaseTypes) (current.getBaseTypes() || []).forEach(collect);
+        if (current.getConstructSignatures) current.getConstructSignatures().forEach(function (signature) {
+            collect(signature.getReturnType());
+        });
+    }
+    collect(type);
+    return !!allowed[property.parent.getName()];
+}
+
+function checkedTarget(symbol, checker) {
+    if (symbol.flags & ts.SymbolFlags.Alias) {
+        try { return checker.getAliasedSymbol(symbol); } catch (e) { return symbol; }
+    }
+    return symbol;
+}
+
+function addCheckedExport(exportName, symbol, checker, result, seen, fallbackDeclaration) {
+    if (isTypeOnlyExport(symbol)) return;
+    var target = checkedTarget(symbol, checker);
+    if (!(target.flags & ts.SymbolFlags.Value)) return;
+    var declaration = target.valueDeclaration || (target.declarations && target.declarations[0]) || fallbackDeclaration;
+    if (!declaration) return;
+    var type = checker.getTypeOfSymbolAtLocation(target, declaration);
+    // Declaration packages sometimes use an exported unique-symbol sentinel solely as a computed
+    // type key. It is not a property of the runtime module value (notably @types/lodash).
+    if (exportName === 'uniqueSymbol' && checker.typeToString(type, declaration) === 'unique symbol') return;
+    if (!seen[exportName]) {
+        seen[exportName] = true;
+        result.moduleExports.push(exportName);
+    }
+    var calls = type.getCallSignatures ? type.getCallSignatures() : [];
+    var constructs = type.getConstructSignatures ? type.getConstructSignatures() : [];
+    var properties = checker.getPropertiesOfType(type);
+    var display = checker.typeToString(type, declaration, ts.TypeFormatFlags.NoTruncation);
+    var existing = result.variables[exportName];
+    var existingNominal = existing &&
+        (existing.type.indexOf('TYPE$') === 0 || existing.type.indexOf('NAMESPACE$') === 0);
+    var synthetic = 'EXPORT$' + exportName.replace(/[^A-Za-z0-9_$]/g, '_');
+    if (properties.length > 0 || constructs.length > 0) {
+        var interfaceName = existingNominal ? existing.type : synthetic;
+        addCheckedInterface(interfaceName, type, checker, result, declaration, 0);
+        display = interfaceName;
+    }
+
+    var documentation = checkedDocumentation(target, checker);
+    result.variables[exportName] = {
+        type: existingNominal ? existing.type : (display || 'unknown'),
+        doc: documentation || (existing && existing.doc) || null,
+        location: checkedLocation(declaration)
+    };
+    if (calls.length > 0) {
+        var checkedCalls = calls.map(function (signature) {
+            return checkedSignature(signature, checker, declaration);
+        });
+        result.functions[exportName] = (result.functions[exportName] || []).concat(checkedCalls);
+    }
+}
+
+function isTypeOnlyExport(symbol) {
+    return !!(symbol.declarations && symbol.declarations.some(function (declaration) {
+        return !!(declaration.isTypeOnly || (declaration.parent && declaration.parent.isTypeOnly));
+    }));
+}
+
+function addCheckedInterface(name, type, checker, result, declaration, depth) {
+    var iface = result.interfaces[name];
+    if (!iface) {
+        iface = { location: checkedLocation(declaration), extends: [], typeParams: [], members: Object.create(null) };
+        result.interfaces[name] = iface;
+    }
+
+    var constructs = type.getConstructSignatures ? type.getConstructSignatures() : [];
+    if (constructs.length > 0) {
+        iface.members['new'] = constructs.map(function (signature) {
+            return checkedSignature(signature, checker, declaration);
+        });
+    }
+    checker.getPropertiesOfType(type).filter(function (property) {
+        return property.getName().indexOf('__@') !== 0;
+    }).forEach(function (property) {
+        var memberDeclaration = property.valueDeclaration || (property.declarations && property.declarations[0]) || declaration;
+        var memberType = checker.getTypeOfSymbolAtLocation(property, memberDeclaration);
+        var signatures = memberType.getCallSignatures ? memberType.getCallSignatures() : [];
+        if (signatures.length > 0) {
+            iface.members[property.getName()] = signatures.map(function (signature) {
+                return checkedSignature(signature, checker, memberDeclaration, property);
+            });
+            return;
+        }
+        var memberDisplay = checker.typeToString(memberType, memberDeclaration, ts.TypeFormatFlags.NoTruncation);
+        var nestedProperties = checker.getPropertiesOfType(memberType);
+        if (depth < 2 && nestedProperties.length > 0 && memberDisplay.length > 180) {
+            var nestedName = name + '$' + property.getName().replace(/[^A-Za-z0-9_$]/g, '_');
+            addCheckedInterface(nestedName, memberType, checker, result, memberDeclaration, depth + 1);
+            memberDisplay = nestedName;
+        }
+        iface.members[property.getName()] = [{
+            kind: 'property',
+            params: [],
+            returns: 'any',
+            type: memberDisplay || 'unknown',
+            optional: !!(property.flags & ts.SymbolFlags.Optional),
+            doc: checkedDocumentation(property, checker),
+            location: checkedLocation(memberDeclaration)
+        }];
+    });
+}
+
+function checkedSignature(signature, checker, fallbackDeclaration, owner) {
+    var declaration = signature.getDeclaration ? signature.getDeclaration() : fallbackDeclaration;
+    var params = signature.getParameters().map(function (parameter) {
+        var parameterDeclaration = parameter.valueDeclaration || (parameter.declarations && parameter.declarations[0]) || declaration;
+        var parameterType = checker.getTypeOfSymbolAtLocation(parameter, parameterDeclaration);
+        return {
+            name: parameter.getName(),
+            type: checker.typeToString(parameterType, parameterDeclaration, ts.TypeFormatFlags.NoTruncation),
+            optional: !!(parameter.flags & ts.SymbolFlags.Optional),
+            rest: !!(parameterDeclaration && parameterDeclaration.dotDotDotToken)
+        };
+    });
+    return {
+        kind: 'method',
+        params: params,
+        returns: checker.typeToString(signature.getReturnType(), declaration, ts.TypeFormatFlags.NoTruncation),
+        type: 'Function',
+        optional: false,
+        doc: checkedDocumentation(owner || signature, checker),
+        location: checkedLocation(declaration || fallbackDeclaration)
+    };
+}
+
+function checkedDocumentation(value, checker) {
+    try {
+        var parts = value.getDocumentationComment ? value.getDocumentationComment(checker) : [];
+        return ts.displayPartsToString(parts) || null;
+    } catch (e) {
+        return null;
+    }
+}
+
+function checkedLocation(declaration) {
+    if (!declaration || !declaration.getSourceFile) return null;
+    var source = declaration.getSourceFile();
+    var target = declaration.name || declaration;
+    return { filePath: source.fileName, offset: target.getStart(source) };
 }
 
 function jsDocText(node, sourceFile) {

@@ -8,8 +8,35 @@ import org.junit.Assume.assumeNotNull
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 import java.io.File
+import java.nio.file.Files
 
 class DtsParserTest {
+
+    @Test
+    fun `merges javascript only esm and commonjs entry surfaces`() {
+        val nodeExecutable = DtsParser.findNodeExecutable()
+        assumeNotNull(nodeExecutable)
+        val dir = Files.createTempDirectory("js-only-package").toFile()
+        try {
+            val esm = File(dir, "index.mjs").apply {
+                writeText("""/** Browser formatter. */ export function format(value) { return String(value); }""")
+            }
+            val cjs = File(dir, "index.cjs").apply {
+                writeText("""/** Node parser. */ exports.parse = function (value) { return Number(value); };""")
+            }
+            DtsParser(nodeExecutable!!).use { parser ->
+                val files = linkedMapOf(esm.absolutePath to esm.readText(), cjs.absolutePath to cjs.readText())
+                val symbols = parser.parse(files, files.keys)
+                assertEquals(setOf("format", "parse"), symbols.moduleExports)
+                assertTrue(symbols.functions["format"].orEmpty().isNotEmpty())
+                assertTrue(symbols.functions["parse"].orEmpty().isNotEmpty())
+                assertNotNull(symbols.functions["format"]?.firstOrNull()?.location)
+                assertNotNull(symbols.functions["parse"]?.firstOrNull()?.location)
+            }
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
 
     @Test
     fun createRangeMemberOffsetMatchesIdentifier() {

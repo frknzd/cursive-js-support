@@ -153,15 +153,17 @@ class JsSymbolIndex {
         val exportDocs = builder.npmExportDocs.computeIfAbsent(packageName) { ConcurrentHashMap() }
 
         // Extract locations for all exports
-        symbols.variables.forEach { (name, info) ->
+        symbols.variables.filterKeys { symbols.moduleExports == null || it in symbols.moduleExports }.forEach { (name, info) ->
             exports[name] = info.location
             exportTypes[name] = info.type
             info.doc?.let { exportDocs[name] = it }
         }
-        symbols.functions.forEach { (name, overloads) ->
+        symbols.functions.filterKeys { symbols.moduleExports == null || it in symbols.moduleExports }.forEach { (name, overloads) ->
             exports[name] = overloads.firstOrNull()?.location
             val m = overloads.firstOrNull()
-            exportTypes[name] = m?.returns?.takeIf { it.isNotBlank() } ?: "Function"
+            exportTypes[name] = symbols.variables[name]?.type?.takeIf { it.isNotBlank() }
+                ?: m?.returns?.takeIf { it.isNotBlank() }
+                ?: "Function"
             exportMembers[name] = overloads
             m?.doc?.let { exportDocs[name] = it }
         }

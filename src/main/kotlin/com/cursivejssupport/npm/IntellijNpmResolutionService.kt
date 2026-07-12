@@ -10,6 +10,7 @@ import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiManager
 import com.intellij.lang.javascript.psi.JSFile
 import com.intellij.openapi.components.service
+import com.intellij.openapi.vfs.VirtualFile
 import java.io.File
 
 @Service(Service.Level.PROJECT)
@@ -19,24 +20,29 @@ class IntellijNpmResolutionService(private val project: Project) {
         val anchorFile = anchor.virtualFile ?: return emptyList()
         project.basePath?.let { File(it) } ?: return emptyList()
 
-        // Ask the JavaScript plugin first. This is the same Node/TypeScript module resolver used
-        // by JS and TS source files, so exports conditions, tsconfig mappings, package managers,
-        // and the IDE's TypeScript service stay authoritative.
+        // Prefer declarations, then supplement them with the runtime module. IntelliJ can expose
+        // only a subset of statically assigned CommonJS exports (for example diff@8), whereas the
+        // package's .d.ts contains the complete public API.
+        val moduleFiles = LinkedHashSet<VirtualFile>()
+        project.service<NpmPackageResolver>().typingsEntryFiles(packageName, anchorFile.path)
+            .mapNotNull { VirtualFileManager.getInstance().findFileByNioPath(it.toPath()) }
+            .forEach(moduleFiles::add)
+
         val moduleManager = NodeModuleManager.getInstance(project)
         val moduleInfo = moduleManager.resolveNonPathModule(packageName, anchorFile)
             ?: moduleManager.resolveCoreModule(packageName, anchorFile)
-        var moduleFile = moduleInfo?.moduleMainFile ?: moduleInfo?.moduleSourceRoot
+        (moduleInfo?.moduleMainFile ?: moduleInfo?.moduleSourceRoot)?.let(moduleFiles::add)
 
-        // Deterministic fallback for test fixtures and declarations the IDE has not indexed yet.
-        if (moduleFile == null) {
-            val typingsFile = project.service<NpmPackageResolver>().typingsEntryFile(packageName, anchorFile.path)
-            if (typingsFile != null) {
-                moduleFile = VirtualFileManager.getInstance().findFileByNioPath(typingsFile.toPath())
-            }
+        val named = LinkedHashMap<String, PsiElement>()
+        val unnamed = mutableListOf<PsiElement>()
+        moduleFiles.flatMap(::exportsFrom).forEach { element ->
+            val name = (element as? com.intellij.lang.javascript.psi.JSNamedElement)?.name
+            if (name == null) unnamed += element else named.putIfAbsent(name, element)
         }
-        
-        if (moduleFile == null) return emptyList()
+        return named.values + unnamed
+    }
 
+    private fun exportsFrom(moduleFile: VirtualFile): List<PsiElement> {
         val psiFile = PsiManager.getInstance(project).findFile(moduleFile)
         if (psiFile is JSFile) {
             val exports = JSResolveUtil.getExportedElements(psiFile) ?: emptyList()

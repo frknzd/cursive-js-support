@@ -40,6 +40,79 @@ class NpmPackageTypingsTest {
     }
 
     @Test
+    fun `resolves diff style nested import and require declarations`() {
+        val dir = Files.createTempDirectory("npm-typings").toFile()
+        try {
+            File(dir, "package.json").writeText(
+                """{"name":"diff","types":"libcjs/index.d.ts","exports":{".":{"import":{"types":"./libesm/index.d.ts","default":"./libesm/index.js"},"require":{"types":"./libcjs/index.d.ts","default":"./libcjs/index.js"}}}}""",
+            )
+            File(dir, "libcjs").mkdirs()
+            File(dir, "libesm").mkdirs()
+            File(dir, "libcjs/index.d.ts").writeText("export { diffArrays } from './diff/array.js'\n")
+            File(dir, "libesm/index.d.ts").writeText("export { diffArrays } from './diff/array.js'\n")
+            assertEquals("libcjs/index.d.ts", NpmPackageTypings.typingsEntryRelativePath(dir))
+            assertEquals(
+                setOf("libcjs/index.d.ts", "libesm/index.d.ts"),
+                NpmPackageTypings.typingsEntryRelativePaths(dir).toSet(),
+            )
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `finds d cts beside a commonjs conditional export`() {
+        val dir = Files.createTempDirectory("npm-typings").toFile()
+        try {
+            File(dir, "package.json").writeText(
+                """{"name":"x","exports":{".":{"require":"./dist/index.cjs"}}}""",
+            )
+            File(dir, "dist").mkdirs()
+            File(dir, "dist/index.cjs").writeText("module.exports = {}\n")
+            File(dir, "dist/index.d.cts").writeText("export = value\n")
+            assertEquals("dist/index.d.cts", NpmPackageTypings.typingsEntryRelativePath(dir))
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `collects declarations from every custom condition`() {
+        val dir = Files.createTempDirectory("npm-typings").toFile()
+        try {
+            File(dir, "package.json").writeText(
+                """{"name":"x","exports":{".":{"browser":{"types":"./browser.d.ts"},"node":{"types":"./node.d.cts"},"react-server":{"types":"./server.d.mts"}}}}""",
+            )
+            listOf("browser.d.ts", "node.d.cts", "server.d.mts").forEach {
+                File(dir, it).writeText("export const ${it.substringBefore('.')}: string\n")
+            }
+            assertEquals(
+                setOf("browser.d.ts", "node.d.cts", "server.d.mts"),
+                NpmPackageTypings.typingsEntryRelativePaths(dir).toSet(),
+            )
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `collects javascript entries when declarations are absent`() {
+        val dir = Files.createTempDirectory("npm-typings").toFile()
+        try {
+            File(dir, "package.json").writeText(
+                """{"name":"x","exports":{".":{"import":"./index.mjs","require":"./index.cjs","browser":"./browser.js"}}}""",
+            )
+            listOf("index.mjs", "index.cjs", "browser.js").forEach { File(dir, it).writeText("export {}\n") }
+            assertEquals(
+                setOf("index.mjs", "index.cjs", "browser.js"),
+                NpmPackageTypings.runtimeEntryRelativePaths(dir).toSet(),
+            )
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `no typings hints returns null`() {
         val dir = Files.createTempDirectory("npm-typings").toFile()
         try {

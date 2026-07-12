@@ -11,7 +11,9 @@ import java.util.concurrent.ConcurrentHashMap
 
 data class ResolvedNpmPackage(
     val packageName: String,
-    val files: Map<String, String>  // absolute file path → .d.ts content
+    val files: Map<String, String>,
+    /** Absolute module entries across applicable import/require/custom export conditions. */
+    val entryFiles: List<String> = files.keys.toList(),
 )
 
 internal data class NpmPackageRequest(val packageName: String, val subpath: String?) {
@@ -278,21 +280,25 @@ class NpmPackageResolver(
      * nested `node_modules` when dependencies are not hoisted to [projectDir]/node_modules.
      */
     fun typingsEntryFile(packageName: String, anchorFilePath: String? = null): File? {
+        return typingsEntryFiles(packageName, anchorFilePath).firstOrNull()
+    }
+
+    fun typingsEntryFiles(packageName: String, anchorFilePath: String? = null): List<File> {
         val request = NpmPackageRequest.parse(packageName)
         for (nmRoot in candidateNodeModulesDirs(anchorFilePath)) {
             val pkgDir = packageDirUnder(nmRoot, request.packageName)
             if (!pkgDir.isDirectory) continue
-            val rel = findPackageOwnTypes(pkgDir, request.subpath) ?: continue
-            val f = File(pkgDir, rel)
-            if (f.isFile) return f
+            val files = findPackageOwnTypes(pkgDir, request.subpath).map(pkgDir::resolve).filter(File::isFile)
+            if (files.isNotEmpty()) return files
         }
         for (nmRoot in candidateNodeModulesDirs(anchorFilePath)) {
             val typesDir = atTypesDirUnder(nmRoot, request.packageName)
             if (!typesDir.isDirectory) continue
-            val idx = File(typesDir, "index.d.ts")
-            if (idx.isFile) return idx
+            val files = NpmPackageTypings.typingsEntryRelativePaths(typesDir, request.subpath)
+                .map(typesDir::resolve).filter(File::isFile)
+            if (files.isNotEmpty()) return files
         }
-        return null
+        return emptyList()
     }
 
     private fun parsePackageJson(file: File): Set<String> = try {
@@ -335,9 +341,10 @@ class NpmPackageResolver(
         }
     }
 
-    private fun resolve(packageName: String, anchorFilePath: String? = null): ResolvedNpmPackage? {
+    internal fun resolvePackage(packageName: String, anchorFilePath: String? = null): ResolvedNpmPackage? {
         val request = NpmPackageRequest.parse(packageName)
         val files = mutableMapOf<String, String>()
+        var entryFiles = emptyList<String>()
 
         var foundPkgDir: File? = null
         for (nmRoot in candidateNodeModulesDirs(anchorFilePath)) {
@@ -349,9 +356,10 @@ class NpmPackageResolver(
         }
 
         if (foundPkgDir != null) {
-            val entryDts = findPackageOwnTypes(foundPkgDir, request.subpath)
-            if (entryDts != null) {
-                files.putAll(collectDtsFiles(foundPkgDir, entryDts))
+            val entries = findPackageOwnTypes(foundPkgDir, request.subpath)
+            if (entries.isNotEmpty()) {
+                entryFiles = entries.map { File(foundPkgDir, it).absolutePath }
+                files.putAll(collectPackageFiles(foundPkgDir, entries))
             }
         }
 
@@ -359,25 +367,37 @@ class NpmPackageResolver(
             for (nmRoot in candidateNodeModulesDirs(anchorFilePath)) {
                 val typesDir = atTypesDirUnder(nmRoot, request.packageName)
                 if (typesDir.isDirectory) {
-                    val index = File(typesDir, "index.d.ts")
-                    if (index.isFile) {
-                        files.putAll(collectDtsFiles(typesDir, "index.d.ts"))
+                    val entries = NpmPackageTypings.typingsEntryRelativePaths(typesDir, request.subpath)
+                    if (entries.isNotEmpty()) {
+                        entryFiles = entries.map { File(typesDir, it).absolutePath }
+                        files.putAll(collectPackageFiles(typesDir, entries))
                         break
                     }
                 }
             }
         }
 
-        return if (files.isNotEmpty()) ResolvedNpmPackage(packageName, files) else null
+        // JavaScript-only packages still have a statically observable module surface. Feed every
+        // runtime condition entry to the TypeScript checker when declarations are unavailable.
+        if (files.isEmpty() && foundPkgDir != null) {
+            val entries = NpmPackageTypings.runtimeEntryRelativePaths(foundPkgDir, request.subpath)
+            entryFiles = entries.map { File(foundPkgDir, it).absolutePath }
+            files.putAll(collectPackageFiles(foundPkgDir, entries))
+        }
+
+        return if (files.isNotEmpty()) ResolvedNpmPackage(packageName, files, entryFiles) else null
     }
 
-    private fun findPackageOwnTypes(pkgDir: File, subpath: String? = null): String? =
-        NpmPackageTypings.typingsEntryRelativePath(pkgDir, subpath)
+    private fun resolve(packageName: String, anchorFilePath: String? = null): ResolvedNpmPackage? =
+        resolvePackage(packageName, anchorFilePath)
 
-    private fun collectDtsFiles(baseDir: File, entryName: String): Map<String, String> {
+    private fun findPackageOwnTypes(pkgDir: File, subpath: String? = null): List<String> =
+        NpmPackageTypings.typingsEntryRelativePaths(pkgDir, subpath)
+
+    private fun collectPackageFiles(baseDir: File, entries: Collection<String>): Map<String, String> {
         val collected = mutableMapOf<String, String>()
         val queue = ArrayDeque<String>()
-        queue.add(entryName)
+        queue.addAll(entries)
 
         while (queue.isNotEmpty()) {
             val name = queue.removeFirst()
