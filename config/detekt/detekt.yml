@@ -1,0 +1,54 @@
+complexity:
+  active: true
+  CyclomaticComplexMethod:
+    active: true
+    allowedComplexity: 70
+    excludes: ['**/test/**']
+  LargeClass:
+    active: true
+    allowedLines: 600
+    excludes: ['**/test/**']
+  LongMethod:
+    active: true
+    allowedLines: 130
+    excludes: ['**/test/**']
+  NestedBlockDepth:
+    active: true
+    allowedDepth: 8
+    excludes: ['**/test/**']
+  ComplexCondition:
+    active: false
+  TooManyFunctions:
+    active: false
+
+exceptions:
+  active: true
+  SwallowedException:
+    active: true
+    ignoredExceptionTypes: ['InterruptedException', 'MalformedURLException', 'NumberFormatException', 'ParseException']
+  TooGenericExceptionCaught:
+    active: false
+    exceptionNames: ['Error', 'Exception', 'RuntimeException', 'Throwable']
+    excludes: ['**/test/**']
+  TooGenericExceptionThrown:
+    active: false
+
+style:
+  active: true
+  MaxLineLength:
+    active: true
+    maxLineLength: 240
+    excludeCommentStatements: true
+    excludes: ['**/test/**']
+  WildcardImport:
+    active: true
+  ReturnCount:
+    active: false
+  MagicNumber:
+    active: false
+  MayBeConstant:
+    active: false
+  LoopWithTooManyJumpStatements:
+    active: false
+  ThrowsCount:
+    active: false

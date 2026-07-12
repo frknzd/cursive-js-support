@@ -14,8 +14,6 @@ class JsSupportSettings : PersistentStateComponent<JsSupportSettings.State> {
         var browserSymbolsResourcePath: String = "/js/browser-symbols.json.gz",
         var maxNpmPackages: Int = 400,
         var scanLockfileTransitive: Boolean = false,
-        /** Use IntelliJ's JavaScript type evaluation for npm exports (when the JS plugin is present). */
-        var useIntellijJsTypes: Boolean = true,
     )
 
     private var state = State()

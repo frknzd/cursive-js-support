@@ -10,7 +10,7 @@ import org.junit.Test
 
 class InteropContextDetectorTest {
 
-    private val GOOG_NS = setOf("goog", "goog.array", "goog.dom", "goog.string", "goog.structs", "goog.events")
+    private val googNamespaces = setOf("goog", "goog.array", "goog.dom", "goog.string", "goog.structs", "goog.events")
 
     private fun detect(
         text: String,
@@ -268,27 +268,27 @@ class InteropContextDetectorTest {
     // ─── GoogNamespaceName ────────────────────────────────────────────────────
 
     @Test fun `bare goog with known namespaces yields GoogNamespaceName`() {
-        val ctx = detect("(goog", googNs = GOOG_NS) as InteropCompletionContext.GoogNamespaceName
+        val ctx = detect("(goog", googNs = googNamespaces) as InteropCompletionContext.GoogNamespaceName
         assertEquals("goog", ctx.prefix)
     }
 
     @Test fun `goog dot partial yields GoogNamespaceName`() {
-        val ctx = detect("(goog.", googNs = GOOG_NS) as InteropCompletionContext.GoogNamespaceName
+        val ctx = detect("(goog.", googNs = googNamespaces) as InteropCompletionContext.GoogNamespaceName
         assertEquals("goog.", ctx.prefix)
     }
 
     @Test fun `goog dot string prefix yields GoogNamespaceName`() {
-        val ctx = detect("(goog.str", googNs = GOOG_NS) as InteropCompletionContext.GoogNamespaceName
+        val ctx = detect("(goog.str", googNs = googNamespaces) as InteropCompletionContext.GoogNamespaceName
         assertEquals("goog.str", ctx.prefix)
     }
 
     @Test fun `goog dot dom prefix yields GoogNamespaceName`() {
-        val ctx = detect("(goog.dom", googNs = GOOG_NS) as InteropCompletionContext.GoogNamespaceName
+        val ctx = detect("(goog.dom", googNs = googNamespaces) as InteropCompletionContext.GoogNamespaceName
         assertEquals("goog.dom", ctx.prefix)
     }
 
     @Test fun `goog dot full namespace yields GoogNamespaceName`() {
-        val ctx = detect("(goog.string", googNs = GOOG_NS) as InteropCompletionContext.GoogNamespaceName
+        val ctx = detect("(goog.string", googNs = googNamespaces) as InteropCompletionContext.GoogNamespaceName
         assertEquals("goog.string", ctx.prefix)
     }
 
@@ -299,14 +299,14 @@ class InteropContextDetectorTest {
 
     @Test fun `goog slash function yields NpmAliasExport not GoogNamespaceName`() {
         // goog.string/format — slash present, the namespace-export path wins
-        val ctx = detect("(goog.string/", googNs = GOOG_NS)
+        val ctx = detect("(goog.string/", googNs = googNamespaces)
         assertTrue("expected NpmAliasExport, got $ctx", ctx is InteropCompletionContext.NpmAliasExport)
         ctx as InteropCompletionContext.NpmAliasExport
         assertEquals("goog.string", ctx.packageName)
     }
 
     @Test fun `goog slash partial function yields NpmAliasExport`() {
-        val ctx = detect("(goog.string/for", googNs = GOOG_NS)
+        val ctx = detect("(goog.string/for", googNs = googNamespaces)
         assertTrue(ctx is InteropCompletionContext.NpmAliasExport)
         ctx as InteropCompletionContext.NpmAliasExport
         assertEquals("for", ctx.prefix)
@@ -314,16 +314,16 @@ class InteropContextDetectorTest {
     }
 
     @Test fun `goog events namespace yields GoogNamespaceName`() {
-        val ctx = detect("goog.events", googNs = GOOG_NS) as InteropCompletionContext.GoogNamespaceName
+        val ctx = detect("goog.events", googNs = googNamespaces) as InteropCompletionContext.GoogNamespaceName
         assertEquals("goog.events", ctx.prefix)
     }
 
     @Test fun `shouldOpen fires for bare goog token`() {
-        assertTrue(InteropAutoPopupHandler.shouldOpen("(goog", 5, knownGoogNamespaces = GOOG_NS))
+        assertTrue(InteropAutoPopupHandler.shouldOpen("(goog", 5, knownGoogNamespaces = googNamespaces))
     }
 
     @Test fun `shouldOpen fires for goog dot`() {
-        assertTrue(InteropAutoPopupHandler.shouldOpen("(goog.", 6, knownGoogNamespaces = GOOG_NS))
+        assertTrue(InteropAutoPopupHandler.shouldOpen("(goog.", 6, knownGoogNamespaces = googNamespaces))
     }
 
     @Test fun `shouldOpen does not fire for bare goog without index`() {

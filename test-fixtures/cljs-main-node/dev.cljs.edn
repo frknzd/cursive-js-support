@@ -1,0 +1,6 @@
+{:main fixture.core
+ :target :nodejs
+ :output-to "out/main.js"
+ :output-dir "out"
+ :optimizations :none
+ :source-map true}

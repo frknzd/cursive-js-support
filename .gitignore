@@ -3,3 +3,8 @@
 .intellijPlatform
 build
 .DS_Store
+test-fixtures/**/.cpcache
+test-fixtures/**/node_modules
+test-fixtures/**/out
+test-fixtures/**/target
+test-fixtures/**/public/js

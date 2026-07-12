@@ -32,7 +32,7 @@ private class JsSymbolReferenceProvider : PsiReferenceProvider() {
     ): Array<PsiReference> {
         val symbol = element as? ClSymbol ?: return emptyArray()
 
-        val index = JsSymbolIndex.getInstance()
+        val index = JsSymbolIndex.getInstance(element.project)
         val text = symbol.text ?: ""
         val trimmed = text.trim()
         val ns = symbol.namespace

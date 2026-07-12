@@ -1,0 +1,2 @@
+{:deps {org.clojure/clojurescript {:mvn/version "1.12.134"}
+        com.bhauman/figwheel-main {:mvn/version "0.2.20"}}}

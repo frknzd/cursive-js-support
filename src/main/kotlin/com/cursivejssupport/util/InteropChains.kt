@@ -1,9 +1,7 @@
 package com.cursivejssupport.util
 
 import com.cursivejssupport.index.JsSymbolIndex
-import com.intellij.psi.PsiComment
 import com.intellij.psi.PsiElement
-import com.intellij.psi.PsiWhiteSpace
 import cursive.psi.api.ClList
 
 /** A parsed chain-macro form: `(.. root step…)`, `(-> root step…)`, `(doto root step…)`, … */
@@ -52,7 +50,7 @@ data class ChainStepContext(
 object InteropChains {
 
     fun meaningfulChildren(list: PsiElement): List<PsiElement> =
-        list.children.filter { it !is PsiWhiteSpace && it !is PsiComment && it.text != "(" && it.text != ")" }
+        JsInteropPsi.meaningfulChildren(list)
 
     /** Parses [list] as a chain-macro form, or null when its head is not a chain macro. */
     fun parse(list: ClList): ChainForm? {

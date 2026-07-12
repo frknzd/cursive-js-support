@@ -48,7 +48,7 @@ class JsInteropHighlightFilter : HighlightInfoFilter {
         val rawText = document.getText(TextRange(start, end))
         val text = if (rawText.endsWith(".") && rawText.length > 1 && !rawText.startsWith(".")) rawText.removeSuffix(".") else rawText
 
-        val index = JsSymbolIndex.getInstance()
+        val index = JsSymbolIndex.getInstance(file.project)
         val aliases = NsAliasResolver.resolveAliases(file)
 
         // 1. Base namespaces are always valid
@@ -232,7 +232,7 @@ class JsInteropHighlightFilter : HighlightInfoFilter {
             if (full.isNotEmpty() && aliases.containsKey(full)) return true
 
             // Goog namespace or direct goog access
-            val index = JsSymbolIndex.getInstance()
+            val index = JsSymbolIndex.getInstance(file.project)
             if (text.startsWith("goog.") && index.isKnownGoogNamespace(text)) return true
             if (ns != null && index.isKnownGoogNamespace(ns)) return true
             val si = full.indexOf('/')

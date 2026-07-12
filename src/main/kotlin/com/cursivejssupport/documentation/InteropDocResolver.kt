@@ -2,14 +2,13 @@ package com.cursivejssupport.documentation
 
 import com.cursivejssupport.index.JsSymbolIndex
 import com.cursivejssupport.npm.NpmBinding
-import com.cursivejssupport.npm.NsAliasResolver
+import com.cursivejssupport.semantic.InteropSemanticService
 import com.cursivejssupport.parser.JsMember
-import com.cursivejssupport.types.JsTypeSources
 import com.cursivejssupport.util.InteropChains
 import com.cursivejssupport.util.JsResolveUtil
-import com.intellij.psi.PsiComment
+import com.cursivejssupport.util.JsInteropPsi
+import com.intellij.openapi.components.service
 import com.intellij.psi.PsiElement
-import com.intellij.psi.PsiWhiteSpace
 import cursive.psi.api.ClList
 import cursive.psi.impl.symbols.ClEditorSymbol
 
@@ -76,7 +75,7 @@ object InteropDocResolver {
             if (receiver != null) JsResolveUtil.resolveType(receiver, index) else null
         } else null
 
-        val aliases = symbol.containingFile?.let { NsAliasResolver.resolveAliases(it) } ?: emptyMap()
+        val aliases = symbol.containingFile?.let { symbol.project.service<InteropSemanticService>().bindings(it) } ?: emptyMap()
 
         val subject = resolveFromParts(namespace, name, receiverType, aliases, index)
         if (subject is InteropDocSubject.Member && receiverText != null) {
@@ -86,13 +85,14 @@ object InteropDocResolver {
         // when the JavaScript plugin is installed) for signatures / a type display.
         if (subject is InteropDocSubject.NpmExport && subject.overloads.isEmpty()) {
             symbol.containingFile?.let { file ->
-                val descriptors = JsTypeSources.npmExportMembers(file, subject.packageName, subject.exportName)
-                val fnDescriptor = descriptors?.singleOrNull()?.takeIf { it.name == subject.exportName && it.kind == "method" }
+                val semantics = symbol.project.service<InteropSemanticService>()
+                val descriptors = semantics.exportMembers(file, subject.packageName, subject.exportName)
+                val fnDescriptor = descriptors.singleOrNull()?.takeIf { it.name == subject.exportName && it.kind == "method" }
                 val overloads = fnDescriptor?.let {
                     listOf(JsMember(kind = "method", params = it.params, returns = it.returns, doc = it.doc))
                 }.orEmpty()
                 val typeDisplay = subject.type
-                    ?: JsTypeSources.npmExportTypeDisplay(file, subject.packageName, subject.exportName)
+                    ?: semantics.exportType(file, subject.packageName, subject.exportName)?.displayName
                 if (overloads.isNotEmpty() || typeDisplay != subject.type) {
                     return subject.copy(type = typeDisplay, overloads = overloads)
                 }
@@ -355,9 +355,7 @@ object InteropDocResolver {
      */
     private fun findReceiver(symbol: ClEditorSymbol): PsiElement? {
         val list = symbol.parent as? ClList ?: return null
-        val children = list.children.filter {
-            it !is PsiWhiteSpace && it !is PsiComment && it.text != "(" && it.text != ")"
-        }
+        val children = JsInteropPsi.meaningfulChildren(list)
         return children.getOrNull(1)
     }
 

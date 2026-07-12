@@ -1,0 +1,5 @@
+{:main fixture.core
+ :output-to "target/public/cljs-out/dev-main.js"
+ :output-dir "target/public/cljs-out/dev"
+ :asset-path "/cljs-out/dev"
+ :source-map true}

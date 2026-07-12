@@ -7,10 +7,8 @@ import com.intellij.codeInsight.completion.CompletionResultSet
 import com.intellij.codeInsight.completion.InsertionContext
 import com.intellij.codeInsight.lookup.LookupElement
 import com.intellij.codeInsight.lookup.LookupElementBuilder
-import com.intellij.psi.PsiComment
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
-import com.intellij.psi.PsiWhiteSpace
 import cursive.psi.api.ClList
 
 /**
@@ -24,15 +22,13 @@ import cursive.psi.api.ClList
  * Method elements use a small [InsertionContext]-aware handler that inserts `(` and a closing
  * `)` if the user is in head position and the lookup is a function/method.
  */
-import com.cursivejssupport.npm.IntellijNpmResolutionService
+import com.cursivejssupport.semantic.InteropSemanticService
 import com.cursivejssupport.npm.NsAliasResolver
-import com.cursivejssupport.types.JsTypeSources
 import com.cursivejssupport.util.ChainKind
 import com.cursivejssupport.util.InteropChainCore
 import com.cursivejssupport.util.JsInteropChain
+import com.cursivejssupport.util.JsInteropPsi
 import com.intellij.openapi.components.service
-import com.intellij.openapi.components.serviceOrNull
-import com.intellij.lang.javascript.psi.JSNamedElement
 
 object InteropCompletionItems {
 
@@ -53,8 +49,8 @@ object InteropCompletionItems {
         is InteropCompletionContext.NpmAliasName -> emitNpmAliasNames(context, result)
         is InteropCompletionContext.NpmAliasExport -> emitNpmAliasExports(context, file, index, result)
         is InteropCompletionContext.NpmAliasExportMember -> emitNpmAliasExportMembers(context, file, index, result)
-        is InteropCompletionContext.GoogNamespaceRequire -> emitGoogNamespaces(context, index, result)
-        is InteropCompletionContext.GoogNamespaceName -> emitGoogNamespaceNames(context, index, result)
+        is InteropCompletionContext.GoogNamespaceRequire -> emitGoogNamespaces(index, result)
+        is InteropCompletionContext.GoogNamespaceName -> emitGoogNamespaces(index, result)
         is InteropCompletionContext.ChainStepForm -> emitChainStepMembers(context, file, index, result)
     }
 
@@ -119,12 +115,33 @@ object InteropCompletionItems {
         result: CompletionResultSet,
         listAroundCaret: PsiElement?,
     ): Int {
-        if (!index.isLoaded) return 0
         val receiver = receiverForDotMember(listAroundCaret)
-        val receiverType = if (receiver != null) JsResolveUtil.resolveType(receiver, index) else null
-        if (receiverType != null) {
-            return emitMembers(receiverType, index, result, asProperty = context.asProperty, dotForm = true)
+        val resolution = if (receiver != null) JsResolveUtil.resolveTypeRef(receiver, index) else null
+        if (!resolution?.semanticMembers.isNullOrEmpty()) {
+            var n = 0
+            for (descriptor in resolution!!.semanticMembers) {
+                val want = if (context.asProperty) "property" else "method"
+                if (descriptor.kind != want) continue
+                result.addElement(memberLookup(
+                    descriptor.name,
+                    resolution.name,
+                    JsMember(
+                        kind = descriptor.kind,
+                        params = descriptor.params,
+                        returns = descriptor.returns,
+                        type = descriptor.type,
+                        doc = descriptor.doc,
+                    ),
+                    dotForm = true,
+                ))
+                n++
+            }
+            if (n > 0) return n
         }
+        if (resolution != null && resolution.name.isNotEmpty()) {
+            return emitMembers(resolution.name, index, result, asProperty = context.asProperty, dotForm = true)
+        }
+        if (!index.isLoaded) return 0
         // Receiver unknown — sample by member-name prefix.
         var n = 0
         for ((memberName, declaringType, member) in index.sampleMembersByNamePrefix(context.prefix)) {
@@ -178,17 +195,10 @@ object InteropCompletionItems {
         result: CompletionResultSet,
     ): Int {
         var n = 0
-        val service = file.project.serviceOrNull<IntellijNpmResolutionService>()
-        if (service != null) {
-            val exports = service.resolveExports(file, context.packageName)
-            if (exports.isNotEmpty()) {
-                for (export in exports) {
-                    val name = (export as? JSNamedElement)?.name ?: continue
-                    result.addElement(npmExportLookup(name, context.packageName))
-                    n++
-                }
-                if (n > 0) return n
-            }
+        val exports = file.project.service<InteropSemanticService>().exportNames(file, context.packageName)
+        if (exports.isNotEmpty()) {
+            exports.forEach { result.addElement(npmExportLookup(it, context.packageName)); n++ }
+            return n
         }
 
         // Only the package's named exports are valid here. Keyword helpers (`:as`, `:refer`,
@@ -208,17 +218,10 @@ object InteropCompletionItems {
         result: CompletionResultSet,
     ): Int {
         var n = 0
-        val service = file.project.serviceOrNull<IntellijNpmResolutionService>()
-        if (service != null) {
-            val exports = service.resolveExports(file, context.packageName)
-            if (exports.isNotEmpty()) {
-                for (export in exports) {
-                    val name = (export as? JSNamedElement)?.name ?: continue
-                    result.addElement(npmExportLookup(name, context.packageName))
-                    n++
-                }
-                if (n > 0) return n
-            }
+        val exports = file.project.service<InteropSemanticService>().exportNames(file, context.packageName)
+        if (exports.isNotEmpty()) {
+            exports.forEach { result.addElement(npmExportLookup(it, context.packageName)); n++ }
+            return n
         }
 
         if (!index.isLoaded) return 0
@@ -237,10 +240,10 @@ object InteropCompletionItems {
     ): Int {
         // Prefer IntelliJ's own type evaluation when the JavaScript plugin is available — it
         // understands packages whose typings the bundled parser can't fully digest.
-        val descriptors = JsTypeSources.npmExportMembers(
+        val descriptors = file.project.service<InteropSemanticService>().exportMembers(
             file, context.packageName, context.exportName, context.receiverSegments,
         )
-        if (!descriptors.isNullOrEmpty()) {
+        if (descriptors.isNotEmpty()) {
             var n = 0
             for (d in descriptors) {
                 val member = JsMember(kind = d.kind, params = d.params, returns = d.returns, type = d.type, doc = d.doc)
@@ -259,25 +262,7 @@ object InteropCompletionItems {
         return emitMembers(receiverType, index, result, asProperty = null)
     }
 
-    private fun emitGoogNamespaces(
-        context: InteropCompletionContext.GoogNamespaceRequire,
-        index: JsSymbolIndex,
-        result: CompletionResultSet,
-    ): Int {
-        if (!index.isLoaded) return 0
-        var n = 0
-        for (name in index.getGoogNamespaceNames()) {
-            result.addElement(googNamespaceLookup(name))
-            n++
-        }
-        return n
-    }
-
-    private fun emitGoogNamespaceNames(
-        context: InteropCompletionContext.GoogNamespaceName,
-        index: JsSymbolIndex,
-        result: CompletionResultSet,
-    ): Int {
+    private fun emitGoogNamespaces(index: JsSymbolIndex, result: CompletionResultSet): Int {
         if (!index.isLoaded) return 0
         var n = 0
         for (name in index.getGoogNamespaceNames()) {
@@ -355,12 +340,14 @@ object InteropCompletionItems {
             .withPresentableText(name)
             .withTypeText("class")
             .withIcon(JsInteropCompletionIcons.forGlobalConstructor())
+            .withInsertHandler(ConstructorInsertHandler)
 
     private fun globalFunctionLookup(name: String): LookupElement =
         LookupElementBuilder.create(name)
             .withPresentableText(name)
             .withTypeText("function")
             .withIcon(JsInteropCompletionIcons.forGlobalFunction())
+            .withInsertHandler(CallHeadInsertHandler)
 
     private fun memberLookup(memberName: String, declaringType: String?, member: JsMember, dotForm: Boolean): LookupElement {
         val sig = if (member.kind == "method") {
@@ -379,6 +366,7 @@ object InteropCompletionItems {
             .withTypeText(typeText)
             .withIcon(JsInteropCompletionIcons.forJsMemberKind(member.kind))
         if (sig != null) builder = builder.withTailText(sig, true)
+        if (member.kind == "method" && dotForm) builder = builder.withInsertHandler(CallHeadInsertHandler)
         if (presentable != memberName) builder = builder.withLookupString(presentable)
         return builder
     }
@@ -457,9 +445,7 @@ object InteropCompletionItems {
      */
     private fun receiverForDotMember(listAroundCaret: PsiElement?): PsiElement? {
         val list = listAroundCaret as? ClList ?: return null
-        val children = list.children.filter {
-            it !is PsiWhiteSpace && it !is PsiComment && it.text != "(" && it.text != ")"
-        }
+        val children = JsInteropPsi.meaningfulChildren(list)
         return children.getOrNull(1)
     }
 
@@ -473,6 +459,36 @@ object InteropCompletionItems {
                 doc.insertString(offset, " ")
                 editor.caretModel.moveToOffset(offset + 1)
             }
+        }
+    }
+
+    private object CallHeadInsertHandler : com.intellij.codeInsight.completion.InsertHandler<LookupElement> {
+        override fun handleInsert(context: InsertionContext, item: LookupElement) {
+            val doc = context.document
+            val offset = context.tailOffset
+            if (offset >= doc.textLength || doc.charsSequence[offset] !in setOf(' ', ')')) {
+                doc.insertString(offset, " ")
+                context.editor.caretModel.moveToOffset(offset + 1)
+            } else if (offset < doc.textLength && doc.charsSequence[offset] == ')') {
+                doc.insertString(offset, " ")
+                context.editor.caretModel.moveToOffset(offset + 1)
+            }
+        }
+    }
+
+    private object ConstructorInsertHandler : com.intellij.codeInsight.completion.InsertHandler<LookupElement> {
+        override fun handleInsert(context: InsertionContext, item: LookupElement) {
+            val doc = context.document
+            var offset = context.tailOffset
+            if (offset >= doc.textLength || doc.charsSequence[offset] != '.') {
+                doc.insertString(offset, ".")
+                offset++
+            }
+            if (offset >= doc.textLength || doc.charsSequence[offset] == ')') {
+                doc.insertString(offset, " ")
+                offset++
+            }
+            context.editor.caretModel.moveToOffset(offset)
         }
     }
 }

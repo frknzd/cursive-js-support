@@ -298,7 +298,8 @@ object NsAliasResolver {
         while (j + 1 < kids.size) {
             val from = kids[j].text.removePrefix(":").trim()  // original export name
             val to = kids[j + 1].text.removePrefix(":").trim()  // local alias
-            if (from.isNotBlank()) aliases[from] = NpmBinding(packageName, NpmBindingKind.REFER, exportName = from)
+            // `:rename {original local}` binds only the local name. Keeping the original here
+            // produced completion/navigation for a symbol that ClojureScript does not bind.
             if (to.isNotBlank()) aliases[to] = NpmBinding(packageName, NpmBindingKind.REFER, exportName = from)
             j += 2
         }

@@ -2,12 +2,18 @@ package com.cursivejssupport.npm
 
 import com.cursivejssupport.parser.JsParam
 import com.cursivejssupport.types.JsMemberDescriptor
+import com.cursivejssupport.types.JsTypeDescriptor
+import com.cursivejssupport.types.JsCallSignature
+import com.cursivejssupport.types.JsTypeProvenance
 import com.cursivejssupport.types.JsTypeSource
+import com.cursivejssupport.index.JsTypeRef
 import com.intellij.lang.javascript.psi.JSType
 import com.intellij.lang.javascript.psi.JSTypeOwner
+import com.intellij.lang.javascript.psi.JSFunctionType
 import com.intellij.lang.javascript.psi.JSNamedElement
 import com.intellij.lang.javascript.psi.resolve.JSResolveUtil
 import com.intellij.lang.javascript.psi.types.JSFunctionTypeImpl
+import com.intellij.util.ProcessingContext
 import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.psi.PsiElement
@@ -16,15 +22,36 @@ import com.intellij.psi.util.PsiModificationTracker
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * [JsTypeSource] backed by the IntelliJ JavaScript plugin's own type evaluation. Registered
- * ONLY via `META-INF/javascript-support.xml`, so this class never loads when the JavaScript
- * plugin is absent.
+ * [JsTypeSource] backed by the mandatory IntelliJ JavaScript plugin's own type evaluation.
  *
  * The JS plugin's record-type APIs shift between IDE releases — every entry point is wrapped
  * in a broad catch and degrades to `null` (callers fall back to the bundled `.d.ts` index).
  * Lookups are time-budgeted and cached against [PsiModificationTracker].
  */
 class JsPluginTypeSource : JsTypeSource {
+
+    override fun npmExportType(
+        file: PsiFile,
+        packageName: String,
+        exportName: String,
+        memberPath: List<String>,
+    ): JsTypeDescriptor? = guarded {
+        val export = findExport(file, packageName, exportName) ?: return@guarded null
+        var type = evaluatedType(export) ?: return@guarded null
+        for (segment in memberPath) type = propertyType(type, segment) ?: return@guarded null
+        val display = type.getTypeText(JSType.TypeTextFormat.PRESENTABLE)
+        val signatures = functionSignatures(type)
+        JsTypeDescriptor(
+            type = JsTypeRef.parse(display),
+            displayName = display,
+            members = recordMembers(type).orEmpty(),
+            callSignatures = signatures.filterNot { it.constructable },
+            constructSignatures = signatures.filter { it.constructable },
+            confidence = 1.0,
+            provenance = JsTypeProvenance.INTELLIJ,
+            declaration = export,
+        )
+    }
 
     private val log = logger<JsPluginTypeSource>()
 
@@ -52,7 +79,7 @@ class JsPluginTypeSource : JsTypeSource {
         val members = guarded {
             val deadline = System.currentTimeMillis() + TIME_BUDGET_MS
             val export = findExport(file, packageName, exportName) ?: return@guarded null
-            var type = elementType(export) ?: return@guarded null
+            var type = evaluatedType(export) ?: return@guarded null
             for (segment in memberPath) {
                 if (System.currentTimeMillis() > deadline) return@guarded null
                 type = propertyType(type, segment) ?: return@guarded null
@@ -68,30 +95,52 @@ class JsPluginTypeSource : JsTypeSource {
     override fun npmExportTypeDisplay(file: PsiFile, packageName: String, exportName: String): String? =
         guarded {
             val export = findExport(file, packageName, exportName) ?: return@guarded null
-            elementType(export)?.getTypeText(JSType.TypeTextFormat.PRESENTABLE)
+            evaluatedType(export)?.getTypeText(JSType.TypeTextFormat.PRESENTABLE)
         }
 
     // ─── JS plugin internals (all guarded) ──────────────────────────────────
 
     private fun findExport(file: PsiFile, packageName: String, exportName: String): PsiElement? {
-        val service = file.project.service<IntellijNpmResolutionService>()
-        val exports = service.resolveExports(file, packageName)
-        if (exports.isEmpty()) return null
-        return exports.firstOrNull { (it as? JSNamedElement)?.name == exportName }
-            ?: if (exportName == "default") exports.singleOrNull() else null
+        return file.project.service<IntellijNpmResolutionService>().resolveExport(file, packageName, exportName)
     }
 
     private fun elementType(element: PsiElement): JSType? =
         (element as? JSTypeOwner)?.jsType ?: JSResolveUtil.getElementJSType(element)
 
+    private fun evaluatedType(element: PsiElement): JSType? =
+        elementType(element)?.substitute(ProcessingContext())
+
     private fun propertyType(type: JSType, memberName: String): JSType? {
         val signature = type.asRecordType().findPropertySignature(memberName) ?: return null
-        val t = signature.jsType ?: return null
-        return unwrapFunctionReturn(t) ?: t
+        return signature.jsType?.substitute(ProcessingContext())
     }
 
-    private fun unwrapFunctionReturn(type: JSType): JSType? =
-        (type as? JSFunctionTypeImpl)?.returnType
+    private fun callSignature(type: JSFunctionType, constructable: Boolean): JsCallSignature = JsCallSignature(
+        params = type.parameters.map { param ->
+            JsParam(
+                name = param.name ?: "arg",
+                type = param.simpleType?.getTypeText(JSType.TypeTextFormat.PRESENTABLE) ?: "any",
+                optional = param.isOptional,
+                rest = param.isRest,
+            )
+        },
+        returns = JsTypeRef.parse(type.returnType?.getTypeText(JSType.TypeTextFormat.PRESENTABLE) ?: "any"),
+        constructable = constructable,
+        returnMembers = type.returnType?.let { recordMembers(it) }.orEmpty(),
+    )
+
+    private fun functionSignatures(type: JSType): List<JsCallSignature> {
+        val result = ArrayList<JsCallSignature>()
+        type.getFunctionTypes(ProcessingContext(), false).forEach {
+            if (it is JSFunctionType) result += callSignature(it, false)
+        }
+        for (signature in type.asRecordType().callSignatures) {
+            result += callSignature(signature.functionType, signature.hasNew())
+        }
+        return result.distinctBy { signature ->
+            signature.constructable to (signature.params.map { Triple(it.type, it.optional, it.rest) } to signature.returns)
+        }
+    }
 
     private fun recordMembers(type: JSType): List<JsMemberDescriptor>? {
         val properties = type.asRecordType().properties
@@ -102,12 +151,18 @@ class JsPluginTypeSource : JsTypeSource {
             if (name.isEmpty()) continue
             val pType = p.jsType
             val navigatable = p.memberSource.singleElement
-            if (pType is JSFunctionTypeImpl) {
-                out.add(
+            val functionTypes = buildList {
+                if (pType is JSFunctionType) add(pType)
+                pType?.getFunctionTypes(ProcessingContext(), false)?.forEach {
+                    if (it is JSFunctionType && it !in this) add(it)
+                }
+            }
+            if (functionTypes.isNotEmpty()) {
+                functionTypes.forEach { functionType -> out.add(
                     JsMemberDescriptor(
                         name = name,
                         kind = "method",
-                        params = pType.parameters.map { param ->
+                        params = functionType.parameters.map { param ->
                             JsParam(
                                 name = param.name ?: "arg",
                                 type = param.simpleType?.getTypeText(JSType.TypeTextFormat.PRESENTABLE) ?: "any",
@@ -115,10 +170,10 @@ class JsPluginTypeSource : JsTypeSource {
                                 rest = param.isRest,
                             )
                         },
-                        returns = pType.returnType?.getTypeText(JSType.TypeTextFormat.PRESENTABLE) ?: "any",
+                        returns = functionType.returnType?.getTypeText(JSType.TypeTextFormat.PRESENTABLE) ?: "any",
                         navigatable = navigatable,
                     ),
-                )
+                ) }
             } else {
                 out.add(
                     JsMemberDescriptor(

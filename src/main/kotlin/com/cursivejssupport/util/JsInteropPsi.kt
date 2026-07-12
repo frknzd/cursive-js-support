@@ -2,6 +2,7 @@ package com.cursivejssupport.util
 
 import com.intellij.codeInsight.completion.CompletionUtilCore
 import com.intellij.psi.PsiElement
+import com.intellij.psi.PsiComment
 import com.intellij.psi.PsiWhiteSpace
 import com.intellij.psi.util.PsiTreeUtil
 import cursive.psi.impl.symbols.ClEditorSymbol
@@ -10,6 +11,24 @@ import cursive.psi.impl.symbols.ClEditorSymbol
  * Resolves full Clojure/ClojureScript editor symbol text (avoids leaf-only PSI for dotted `js/` and npm forms).
  */
 object JsInteropPsi {
+
+    private val delimiters = setOf("(", ")", "[", "]", "{", "}")
+
+    fun meaningfulChildren(element: PsiElement, vararg excluded: String): List<PsiElement> {
+        val ignored = delimiters + excluded
+        return element.children.filterNot { it is PsiWhiteSpace || it is PsiComment || it.text in ignored }
+    }
+
+    fun listChildren(element: PsiElement): List<PsiElement> =
+        meaningfulChildren(element, "[", "]", "{", "}")
+
+    fun head(element: PsiElement): PsiElement? = meaningfulChildren(element).firstOrNull()
+
+    fun previousMeaningful(element: PsiElement): PsiElement? {
+        var previous = element.prevSibling
+        while (previous is PsiWhiteSpace || previous is PsiComment) previous = previous.prevSibling
+        return previous
+    }
 
     fun enclosingEditorSymbol(element: PsiElement): ClEditorSymbol? =
         PsiTreeUtil.getParentOfType(element, ClEditorSymbol::class.java, false)

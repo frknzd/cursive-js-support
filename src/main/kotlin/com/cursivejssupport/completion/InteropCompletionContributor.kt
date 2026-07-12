@@ -1,8 +1,7 @@
 package com.cursivejssupport.completion
 
 import com.cursivejssupport.index.JsSymbolIndex
-import com.cursivejssupport.npm.IntellijNpmResolutionService
-import com.cursivejssupport.npm.NpmPackageResolver
+import com.cursivejssupport.semantic.InteropSemanticService
 import com.cursivejssupport.npm.NsAliasResolver
 import com.intellij.codeInsight.completion.CompletionContributor
 import com.intellij.codeInsight.completion.CompletionParameters
@@ -11,7 +10,6 @@ import com.intellij.codeInsight.completion.CompletionResultSet
 import com.intellij.codeInsight.completion.CompletionType
 import com.intellij.codeInsight.completion.PlainPrefixMatcher
 import com.intellij.openapi.components.service
-import com.intellij.openapi.components.serviceOrNull
 import com.intellij.patterns.PlatformPatterns
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
@@ -54,7 +52,7 @@ class InteropCompletionContributor : CompletionContributor() {
             val document = parameters.editor.document
             val caret = min(parameters.offset, document.textLength)
             val aliases = NsAliasResolver.resolveAliases(file)
-            val index = JsSymbolIndex.getInstance()
+            val index = JsSymbolIndex.getInstance(file.project)
             val knownGoogNamespaces = if (index.isLoaded) index.getGoogNamespaceNames().toHashSet() else emptySet()
 
             val context = InteropContextDetector.detect(document.charsSequence, caret, aliases, knownGoogNamespaces)
@@ -64,7 +62,7 @@ class InteropCompletionContributor : CompletionContributor() {
             val result = baseResult.withPrefixMatcher(matcher)
 
             if (context is InteropCompletionContext.NsRequirePackage) {
-                emitNpmPackages(context, file, parameters, result)
+                emitNpmPackages(context, file, result)
                 return
             }
 
@@ -75,25 +73,13 @@ class InteropCompletionContributor : CompletionContributor() {
         private fun emitNpmPackages(
             context: InteropCompletionContext.NsRequirePackage,
             file: PsiFile,
-            parameters: CompletionParameters,
             result: CompletionResultSet,
         ) {
             val project = file.project
-            val anchor = file.virtualFile?.path
-            
-            val resolver = project.service<NpmPackageResolver>()
-            val manualPackages = resolver.discoverAllDependencyPackageNames(anchor)
-            val service = project.serviceOrNull<IntellijNpmResolutionService>()
-            val intellijPackages = service?.discoverPackages(file) ?: emptySet()
-            
-            val combined = mutableSetOf<String>()
-            combined.addAll(manualPackages)
-            combined.addAll(intellijPackages)
-
             if (context.prefix.isEmpty()) {
                 result.restartCompletionOnAnyPrefixChange()
             }
-            InteropCompletionItems.emitNpmPackages(combined, result)
+            InteropCompletionItems.emitNpmPackages(project.service<InteropSemanticService>().packages(file), result)
         }
 
         private fun enclosingClList(element: PsiElement?): ClList? {

@@ -9,11 +9,7 @@ import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiManager
 import com.intellij.lang.javascript.psi.JSFile
-import com.intellij.lang.javascript.psi.JSObjectLiteralExpression
-import com.intellij.lang.javascript.psi.ecmal4.JSClass
-import com.intellij.psi.PsiNamedElement
 import com.intellij.openapi.components.service
-import com.intellij.openapi.components.serviceOrNull
 import java.io.File
 
 @Service(Service.Level.PROJECT)
@@ -21,25 +17,22 @@ class IntellijNpmResolutionService(private val project: Project) {
 
     fun resolveExports(anchor: PsiFile, packageName: String): List<PsiElement> {
         val anchorFile = anchor.virtualFile ?: return emptyList()
-        val projectDir = project.basePath?.let { File(it) } ?: return emptyList()
+        project.basePath?.let { File(it) } ?: return emptyList()
 
-        val resolver = project.service<NpmPackageResolver>()
-        val typingsFile = resolver.typingsEntryFile(packageName, anchorFile.path)
-        
-        var moduleFile: com.intellij.openapi.vfs.VirtualFile? = null
-        if (typingsFile != null) {
-            moduleFile = VirtualFileManager.getInstance().findFileByNioPath(typingsFile.toPath())
-        }
+        // Ask the JavaScript plugin first. This is the same Node/TypeScript module resolver used
+        // by JS and TS source files, so exports conditions, tsconfig mappings, package managers,
+        // and the IDE's TypeScript service stay authoritative.
+        val moduleManager = NodeModuleManager.getInstance(project)
+        val moduleInfo = moduleManager.resolveNonPathModule(packageName, anchorFile)
+            ?: moduleManager.resolveCoreModule(packageName, anchorFile)
+        var moduleFile = moduleInfo?.moduleMainFile ?: moduleInfo?.moduleSourceRoot
 
+        // Deterministic fallback for test fixtures and declarations the IDE has not indexed yet.
         if (moduleFile == null) {
-            val moduleManager = NodeModuleManager.getInstance(project)
-            val moduleInfo = moduleManager.resolveNonPathModule(packageName, anchorFile)
-                ?: moduleManager.resolveCoreModule(packageName, anchorFile)
-            moduleFile = try {
-                val clazz = moduleInfo?.javaClass
-                val method = clazz?.methods?.find { it.name == "getModuleSourceFile" || it.name == "getSourceFile" }
-                method?.invoke(moduleInfo) as? com.intellij.openapi.vfs.VirtualFile
-            } catch (e: Exception) { null }
+            val typingsFile = project.service<NpmPackageResolver>().typingsEntryFile(packageName, anchorFile.path)
+            if (typingsFile != null) {
+                moduleFile = VirtualFileManager.getInstance().findFileByNioPath(typingsFile.toPath())
+            }
         }
         
         if (moduleFile == null) return emptyList()
@@ -47,51 +40,47 @@ class IntellijNpmResolutionService(private val project: Project) {
         val psiFile = PsiManager.getInstance(project).findFile(moduleFile)
         if (psiFile is JSFile) {
             val exports = JSResolveUtil.getExportedElements(psiFile) ?: emptyList()
-            val unwrapped = mutableListOf<PsiElement>()
-            for (export in exports) {
-                if (export is JSObjectLiteralExpression) {
-                    unwrapped.addAll(export.properties)
-                } else if (export is JSClass) {
-                    if (exports.size == 1) {
-                        unwrapped.addAll(export.members.toList())
-                    } else {
-                        unwrapped.add(export)
-                    }
-                } else {
-                    unwrapped.add(export)
-                }
-            }
-            
-            if (unwrapped.size == 1) {
-                val single = unwrapped.first()
+            // Preserve export identity. Flattening a sole class/object changes a default export
+            // into named exports and makes CLJS `:default`/`:as` semantics incorrect.
+            if (exports.size == 1) {
+                val single = exports.first()
                 if (single.javaClass.simpleName.contains("Namespace")) {
-                    try {
-                        val getMembers = single.javaClass.methods.find { it.name == "getMembers" || it.name == "members" }
-                        val members = getMembers?.invoke(single) as? Array<*>
-                        if (members != null && members.isNotEmpty()) {
-                            return members.filterIsInstance<PsiElement>()
-                        }
-                    } catch (e: Exception) { }
+                    IntellijNamespaceMembers.members(single).takeIf(List<PsiElement>::isNotEmpty)?.let { return it }
                 }
             }
-            return unwrapped
+            return exports
         }
         return emptyList()
     }
 
+    fun resolveExport(anchor: PsiFile, packageName: String, exportName: String): PsiElement? {
+        val exports = resolveExports(anchor, packageName)
+        return exports.firstOrNull { (it as? com.intellij.lang.javascript.psi.JSNamedElement)?.name == exportName }
+            ?: if (exportName == "default") exports.singleOrNull() else null
+    }
+
+    fun hasExport(anchor: PsiFile, packageName: String, exportName: String): Boolean =
+        resolveExport(anchor, packageName, exportName) != null
+
     fun discoverPackages(anchor: PsiFile): Set<String> {
         val anchorFile = anchor.virtualFile ?: return emptySet()
         val moduleManager = NodeModuleManager.getInstance(project)
-        return try {
-            val modules = moduleManager.collectVisibleNodeModules(anchorFile)
-            modules.mapNotNull {
-                if (it == null) return@mapNotNull null
-                val clazz = it.javaClass
-                val method = clazz.methods.find { m -> m.name == "getName" || m.name == "getModuleName" || m.name == "name" }
-                method?.invoke(it) as? String
-            }.toSet()
-        } catch (e: Exception) {
-            emptySet()
-        }
+        return moduleManager.collectVisibleNodeModules(anchorFile).map { it.name }.toSet()
     }
+}
+
+/** The only compatibility reflection left for JavaScript PSI namespace implementations. */
+private object IntellijNamespaceMembers {
+    private val methods = java.util.concurrent.ConcurrentHashMap<Class<*>, java.lang.reflect.Method?>()
+
+    fun members(namespace: PsiElement): List<PsiElement> = runCatching {
+        val method = methods.computeIfAbsent(namespace.javaClass) { type ->
+            type.methods.firstOrNull { it.name in setOf("getMembers", "members") && it.parameterCount == 0 }
+        } ?: return emptyList()
+        when (val value = method.invoke(namespace)) {
+            is Array<*> -> value.filterIsInstance<PsiElement>()
+            is Collection<*> -> value.filterIsInstance<PsiElement>()
+            else -> emptyList()
+        }
+    }.getOrDefault(emptyList())
 }

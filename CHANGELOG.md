@@ -4,6 +4,30 @@
 
 ## [Unreleased]
 
+## [1.0.0]
+
+- Consolidated npm semantics behind one project service, published immutable index snapshots,
+  extracted the reusable type graph and Clojure PSI helpers, and unified browser/Node debug
+  override and process lifecycle code. Added a fail-fast Detekt gate and data-driven browser
+  navigation coverage while reducing total production and test source lines.
+- Made IntelliJ's JavaScript/TypeScript module resolver and type evaluator authoritative for npm
+  exports across completion, parameter info, inference, navigation, and inspections. Structured
+  semantic results now retain overloads, construct signatures, and evaluated return members
+  instead of collapsing complex TypeScript types through the fallback declaration parser.
+- Corrected `:rename` local-binding semantics and preserved default-export identity when a module
+  contains a single class or object export.
+### Added
+- Project-scoped, atomically published JavaScript indexes with a status tool window and safe reindexing.
+- Shared build-profile discovery for shadow-cljs, `cljs.main`, and Figwheel Main.
+- Structured IntelliJ JavaScript type results, deeper control-flow/destructuring/call inference, and parameter info.
+- Confidence-aware inspections and quick fixes for globals, members, imports, arity, callability, syntax, and deprecations.
+- Node-style npm subpath exports, conditional exports, `typesVersions`, workspace, pnpm, and nested-install support.
+- Source Map v3 parsing, mapped console links, CLJS/CLJC JavaScript breakpoints, and a ClojureScript JavaScript Debug configuration.
+- Browser, Node, and Figwheel testing fixtures plus an end-to-end usage guide.
+
+### Changed
+- IntelliJ JavaScript and JavaScript Debugger are now mandatory dependencies; version 1.0 targets IntelliJ IDEA Ultimate 2026.1.
+
 ## [0.6.2]
 ### Fixed
 - Use the current editor-aware completion-confidence API instead of the deprecated `CompletionConfidence.shouldSkipAutopopup(PsiElement, PsiFile, Int)` overload.

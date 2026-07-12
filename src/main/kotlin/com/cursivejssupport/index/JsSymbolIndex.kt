@@ -15,6 +15,7 @@ import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiManager
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import java.io.File
 
 data class JsResolvedMember(
@@ -26,41 +27,89 @@ data class JsResolvedMember(
     val first: JsMember? get() = overloads.firstOrNull()
 }
 
-@Service(Service.Level.APP)
+@Service(Service.Level.PROJECT)
 class JsSymbolIndex {
 
     private val log = logger<JsSymbolIndex>()
 
-    private val globals = ConcurrentHashMap<String, JsVariableInfo>()
-    private val interfaces = ConcurrentHashMap<String, JsInterface>()
-    private val functions = ConcurrentHashMap<String, List<JsMember>>()
+    private class Builder {
+        val globals = ConcurrentHashMap<String, JsVariableInfo>()
+        val interfaces = ConcurrentHashMap<String, JsInterface>()
+        val functions = ConcurrentHashMap<String, List<JsMember>>()
+        val npmExports = ConcurrentHashMap<String, MutableMap<String, JsLocation?>>()
+        val npmExportTypes = ConcurrentHashMap<String, MutableMap<String, String>>()
+        val memberSamples = ConcurrentHashMap<String, MutableList<Pair<String, JsMember>>>()
+        val aliases = ConcurrentHashMap<String, String>()
+        val npmExportMembers = ConcurrentHashMap<String, MutableMap<String, List<JsMember>>>()
+        val npmExportDocs = ConcurrentHashMap<String, MutableMap<String, String>>()
+    }
+
+    private data class Snapshot(
+        val globals: Map<String, JsVariableInfo> = emptyMap(),
+        val interfaces: Map<String, JsInterface> = emptyMap(),
+        val functions: Map<String, List<JsMember>> = emptyMap(),
+        val npmExports: Map<String, Map<String, JsLocation?>> = emptyMap(),
+        val npmExportTypes: Map<String, Map<String, String>> = emptyMap(),
+        val memberSamples: Map<String, List<Pair<String, JsMember>>> = emptyMap(),
+        val aliases: Map<String, String> = emptyMap(),
+        val npmExportMembers: Map<String, Map<String, List<JsMember>>> = emptyMap(),
+        val npmExportDocs: Map<String, Map<String, String>> = emptyMap(),
+    )
+
+    private val builder = Builder()
+    private val snapshot = AtomicReference(Snapshot())
+    private val published get() = _loaded.get()
+    private val globals get() = if (published) snapshot.get().globals else builder.globals
+    private val interfaces get() = if (published) snapshot.get().interfaces else builder.interfaces
+    private val functions get() = if (published) snapshot.get().functions else builder.functions
 
     // CHANGED: Now maps PackageName -> (ExportName -> Location)
-    private val npmExports = ConcurrentHashMap<String, MutableMap<String, JsLocation?>>()
+    private val npmExports get() = if (published) snapshot.get().npmExports else builder.npmExports
     /** Export name → TypeScript type name (from parsed .d.ts) for npm member completion. */
-    private val npmExportTypes = ConcurrentHashMap<String, MutableMap<String, String>>()
+    private val npmExportTypes get() = if (published) snapshot.get().npmExportTypes else builder.npmExportTypes
 
     /** Member name → up to N sample (declaring interface, first overload) for fast completion when receiver type is unknown. */
-    private val memberSamples = ConcurrentHashMap<String, MutableList<Pair<String, JsMember>>>()
+    private val memberSamples get() = if (published) snapshot.get().memberSamples else builder.memberSamples
 
     /** Union/intersection type aliases (`BodyInit` → `"Blob|BufferSource|…"`) from the extractor. */
-    private val aliases = ConcurrentHashMap<String, String>()
+    private val aliases get() = if (published) snapshot.get().aliases else builder.aliases
 
     /** Package → export name → function overloads (kept for hover; goog namespaces load as packages too). */
-    private val npmExportMembers = ConcurrentHashMap<String, MutableMap<String, List<JsMember>>>()
+    private val npmExportMembers get() = if (published) snapshot.get().npmExportMembers else builder.npmExportMembers
 
     /** Package → export name → JSDoc of the export's declaration. */
-    private val npmExportDocs = ConcurrentHashMap<String, MutableMap<String, String>>()
+    private val npmExportDocs get() = if (published) snapshot.get().npmExportDocs else builder.npmExportDocs
 
     private val _loaded = AtomicBoolean(false)
+    private val _loading = AtomicBoolean(false)
     val isLoaded: Boolean get() = _loaded.get()
 
-    fun claimLoad(): Boolean = _loaded.compareAndSet(false, true)
-    fun setLoaded(value: Boolean) { _loaded.set(value) }
+    fun claimLoad(): Boolean = _loading.compareAndSet(false, true)
+    fun setLoaded(value: Boolean) {
+        if (value && !_loaded.get()) snapshot.set(freeze())
+        _loaded.set(value)
+    }
+    fun finishLoadFailure() { _loading.set(false) }
+
+    /** Publish a completely-built index in one volatile write. */
+    fun publish(replacement: JsSymbolIndex) {
+        snapshot.set(replacement.freeze())
+        _loaded.set(true)
+        _loading.set(false)
+    }
+
+    private fun freeze() = Snapshot(
+        builder.globals.toMap(), builder.interfaces.toMap(), builder.functions.toMap(),
+        builder.npmExports.mapValues { it.value.toMap() },
+        builder.npmExportTypes.mapValues { it.value.toMap() },
+        builder.memberSamples.mapValues { it.value.toList() }, builder.aliases.toMap(),
+        builder.npmExportMembers.mapValues { it.value.toMap() },
+        builder.npmExportDocs.mapValues { it.value.toMap() },
+    )
 
     fun load(symbols: ParsedSymbols) {
         for ((name, iface) in symbols.interfaces) {
-            interfaces.merge(name, iface) { existing, incoming ->
+            builder.interfaces.merge(name, iface) { existing, incoming ->
                 val merged = existing.members.toMutableMap()
                 for ((memberName, overloads) in incoming.members) {
                     merged.merge(memberName, overloads) { a, b -> a + b }
@@ -72,16 +121,17 @@ class JsSymbolIndex {
                 )
             }
         }
-        for ((name, info) in symbols.variables) globals[name] = info
-        for ((name, overloads) in symbols.functions) functions.merge(name, overloads) { a, b -> a + b }
-        for ((name, target) in symbols.aliases) aliases.putIfAbsent(name, target)
+        for ((name, info) in symbols.variables) builder.globals[name] = info
+        for ((name, overloads) in symbols.functions) builder.functions.merge(name, overloads) { a, b -> a + b }
+        for ((name, target) in symbols.aliases) builder.aliases.putIfAbsent(name, target)
         rebuildMemberSamples()
+        if (published) snapshot.set(freeze())
     }
 
     fun loadNpmPackage(packageName: String, symbols: ParsedSymbols) {
         if (symbols.interfaces.isNotEmpty()) {
             for ((name, iface) in symbols.interfaces) {
-                interfaces.merge(name, iface) { existing, incoming ->
+                builder.interfaces.merge(name, iface) { existing, incoming ->
                     val merged = existing.members.toMutableMap()
                     for ((memberName, overloads) in incoming.members) {
                         merged.merge(memberName, overloads) { a, b -> a + b }
@@ -95,12 +145,12 @@ class JsSymbolIndex {
             }
             rebuildMemberSamples()
         }
-        for ((name, target) in symbols.aliases) aliases.putIfAbsent(name, target)
+        for ((name, target) in symbols.aliases) builder.aliases.putIfAbsent(name, target)
 
         val exports = mutableMapOf<String, JsLocation?>()
-        val exportTypes = npmExportTypes.computeIfAbsent(packageName) { ConcurrentHashMap() }
-        val exportMembers = npmExportMembers.computeIfAbsent(packageName) { ConcurrentHashMap() }
-        val exportDocs = npmExportDocs.computeIfAbsent(packageName) { ConcurrentHashMap() }
+        val exportTypes = builder.npmExportTypes.computeIfAbsent(packageName) { ConcurrentHashMap() }
+        val exportMembers = builder.npmExportMembers.computeIfAbsent(packageName) { ConcurrentHashMap() }
+        val exportDocs = builder.npmExportDocs.computeIfAbsent(packageName) { ConcurrentHashMap() }
 
         // Extract locations for all exports
         symbols.variables.forEach { (name, info) ->
@@ -117,17 +167,18 @@ class JsSymbolIndex {
         }
 
         if (exports.isNotEmpty()) {
-            npmExports[packageName] = exports
+            builder.npmExports[packageName] = exports
         }
+        if (published) snapshot.set(freeze())
     }
 
     private fun rebuildMemberSamples() {
-        memberSamples.clear()
-        for (typeName in interfaces.keys) {
+        builder.memberSamples.clear()
+        for (typeName in builder.interfaces.keys) {
             for ((memberName, resolved) in resolveMembers(typeName)) {
                 val overloads = resolved.overloads
                 val first = overloads.firstOrNull() ?: continue
-                val bucket = memberSamples.computeIfAbsent(memberName) { mutableListOf() }
+                val bucket = builder.memberSamples.computeIfAbsent(memberName) { mutableListOf() }
                 if (bucket.size < 8) {
                     bucket.add(resolved.declaringType to first)
                 }
@@ -359,153 +410,28 @@ class JsSymbolIndex {
     fun resolveGlobalType(name: String): String? = globals[name]?.type
     fun resolveInterface(typeName: String): JsInterface? = interfaces[typeName]
 
-    fun resolveMembers(typeName: String): Map<String, JsResolvedMember> {
-        val out = linkedMapOf<String, JsResolvedMember>()
-        collectMembers(canonicalType(typeName), distance = 0, seen = mutableSetOf(), out = out)
-        return out
-    }
+    private fun typeGraph() = JsTypeGraph(interfaces, aliases, ::resolveGlobalType) { resolveFunctions(it) != null }
+
+    fun resolveMembers(typeName: String): Map<String, JsResolvedMember> = typeGraph().members(typeName)
 
     fun resolveMember(typeName: String, memberName: String): JsResolvedMember? =
         resolveMembers(typeName)[memberName]
 
-    private fun collectMembers(
-        typeName: String,
-        distance: Int,
-        seen: MutableSet<String>,
-        out: MutableMap<String, JsResolvedMember>,
-    ) {
-        if (!seen.add(typeName)) return
-        val iface = interfaces[typeName] ?: return
-        for ((memberName, overloads) in iface.members) {
-            out.putIfAbsent(
-                memberName,
-                JsResolvedMember(
-                    declaringType = typeName,
-                    memberName = memberName,
-                    overloads = overloads,
-                    distance = distance,
-                ),
-            )
-        }
-        for (base in iface.extends) {
-            collectMembers(canonicalType(base), distance + 1, seen, out)
-        }
-    }
-
-    /**
-     * Resolves a dotted `js/` chain to the resulting TypeScript type name after walking
-     * globals, properties, and method return types (first overload). Canonical-name twin of
-     * [resolveJsChainTypeRef].
-     */
     fun resolveJsChainType(segments: List<String>): String? =
         resolveJsChainTypeRef(segments)?.primaryName()?.takeIf { it.isNotEmpty() }
 
-    /**
-     * Generic-aware `js/` chain walk: `js/document.querySelectorAll` resolves to
-     * `NodeListOf<Element>` with its type arguments intact, substituting interface type
-     * parameters (`NodeListOf<T>.item(): T` → `Element`) along the way.
-     */
-    fun resolveJsChainTypeRef(segments: List<String>): JsTypeRef? {
-        if (segments.isEmpty()) return null
-        var type: JsTypeRef = resolveGlobalType(segments[0])?.let { expandAliases(JsTypeRef.parse(it)) }
-            ?: (if (resolveFunctions(segments[0]) != null) JsTypeRef.Named("Function") else null)
-            ?: return null
-        for (i in 1 until segments.size) {
-            val member = resolveMembersOf(type)[segments[i]]?.first ?: return null
-            type = substitute(memberValueType(member), substitutionFor(type))
-        }
-        return type
-    }
-
-    /**
-     * The single interface name to resolve members against for a raw type string.
-     *
-     * Structured via [JsTypeRef]: union/intersection parts are preferred concrete-interface
-     * first (`"absolute"|CSSPositionValue` → the interface, `string|null` → `string`), generic
-     * args are stripped (`Promise<Response>` → `Promise`), arrays map to `Array` (fixing the
-     * previous `Element[]` dead end), and union/intersection type aliases (`BodyInit`) expand
-     * to their branches first.
-     */
-    fun canonicalType(rawType: String): String {
-        // Fast path: a plain name that isn't an alias maps to itself.
-        if (rawType.none { it in "|&<[(" } && !aliases.containsKey(rawType)) return rawType
-        val name = expandAliases(JsTypeRef.parse(rawType)).primaryName()
-        return name.ifEmpty { rawType }
-    }
-
-    /**
-     * The single member-type projection: a method's return type or a property's type, with
-     * aliases expanded. Every chain walk / display site funnels through here.
-     */
-    fun memberValueType(member: JsMember): JsTypeRef =
-        expandAliases(JsTypeRef.parse(if (member.kind == "method") member.returns else member.type))
-
-    /** Canonical-name twin of [memberValueType]. */
-    fun memberValueTypeName(member: JsMember): String =
-        memberValueType(member).primaryName()
-
-    /**
-     * Generic-aware member resolution: members of the type's preferred interface
-     * ([JsTypeRef.primaryNamed]), falling back to other union branches when the preferred
-     * one is unknown to the index.
-     */
-    fun resolveMembersOf(type: JsTypeRef): Map<String, JsResolvedMember> {
-        val named = type.primaryNamed() ?: return emptyMap()
-        val direct = resolveMembers(named.name)
-        if (direct.isNotEmpty() || type !is JsTypeRef.Union) return direct
-        for (branch in type.leafNameds()) {
-            if (branch.name == named.name) continue
-            val r = resolveMembers(branch.name)
-            if (r.isNotEmpty()) return r
-        }
-        return direct
-    }
-
-    /**
-     * Type-parameter bindings of a generic instantiation: `NodeListOf<HTMLDivElement>` →
-     * `{T → HTMLDivElement}`. Empty when the type carries no args or the interface declares
-     * no type parameters (legacy indexes).
-     */
-    fun substitutionFor(type: JsTypeRef): Map<String, JsTypeRef> {
-        val named = type.primaryNamed() ?: return emptyMap()
-        if (named.args.isEmpty()) return emptyMap()
-        val params = interfaces[named.name]?.typeParams ?: return emptyMap()
-        if (params.isEmpty()) return emptyMap()
-        return params.zip(named.args).toMap()
-    }
-
-    /** Applies a [substitutionFor] map to free type parameters inside [ref]. */
-    fun substitute(ref: JsTypeRef, substitution: Map<String, JsTypeRef>): JsTypeRef {
-        if (substitution.isEmpty()) return ref
-        return when (ref) {
-            is JsTypeRef.Named ->
-                if (ref.args.isEmpty()) substitution[ref.name] ?: ref
-                else JsTypeRef.Named(ref.name, ref.args.map { substitute(it, substitution) })
-            is JsTypeRef.Union -> JsTypeRef.Union(ref.members.map { substitute(it, substitution) }, ref.intersection)
-            JsTypeRef.Unknown -> ref
-        }
-    }
-
-    /** Expands union/intersection type aliases (`BodyInit` → its branches), cycle-capped. */
-    private fun expandAliases(ref: JsTypeRef, depth: Int = 0): JsTypeRef {
-        if (aliases.isEmpty() || depth > 8) return ref
-        return when (ref) {
-            is JsTypeRef.Named -> {
-                val target = aliases[ref.name]
-                when {
-                    target != null -> expandAliases(JsTypeRef.parse(target), depth + 1)
-                    ref.args.isEmpty() -> ref
-                    else -> JsTypeRef.Named(ref.name, ref.args.map { expandAliases(it, depth + 1) })
-                }
-            }
-            is JsTypeRef.Union -> JsTypeRef.Union(ref.members.map { expandAliases(it, depth + 1) }, ref.intersection)
-            JsTypeRef.Unknown -> ref
-        }
-    }
+    fun resolveJsChainTypeRef(segments: List<String>): JsTypeRef? = typeGraph().chain(segments)
+    fun canonicalType(rawType: String): String = typeGraph().canonical(rawType)
+    fun memberValueType(member: JsMember): JsTypeRef = typeGraph().memberType(member)
+    fun memberValueTypeName(member: JsMember): String = memberValueType(member).primaryName()
+    fun resolveMembersOf(type: JsTypeRef): Map<String, JsResolvedMember> = typeGraph().membersOf(type)
+    fun substitutionFor(type: JsTypeRef): Map<String, JsTypeRef> = typeGraph().substitution(type)
+    fun substitute(ref: JsTypeRef, substitution: Map<String, JsTypeRef>): JsTypeRef = typeGraph().substitute(ref, substitution)
 
     fun allGlobalNames(): Collection<String> = globals.keys
     fun allFunctionNames(): Collection<String> = functions.keys
     fun npmExportNames(packageName: String): Collection<String> = npmExports[packageName]?.keys ?: emptySet()
+    fun indexedNpmPackageCount(): Int = npmExports.keys.count { it != "goog" && !it.startsWith("goog.") }
 
     /** TypeScript type for an npm export (e.g. `default` → `React.ComponentType`), if known from typings. */
     fun resolveNpmExportType(packageName: String, exportName: String): String? =
@@ -527,6 +453,6 @@ class JsSymbolIndex {
         (name == "goog" || name.startsWith("goog.")) && npmExports.containsKey(name)
 
     companion object {
-        @JvmStatic fun getInstance(): JsSymbolIndex = service()
+        @JvmStatic fun getInstance(project: Project): JsSymbolIndex = project.service()
     }
 }

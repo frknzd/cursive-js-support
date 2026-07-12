@@ -31,7 +31,7 @@ class InteropAutoPopupHandler : TypedHandlerDelegate() {
                 val doc = editor.document
                 val caret = min(editor.caretModel.offset, doc.textLength)
                 val aliases = NsAliasResolver.resolveAliases(committed)
-                val index = JsSymbolIndex.getInstance()
+                val index = JsSymbolIndex.getInstance(project)
                 val googNs = if (index.isLoaded) index.getGoogNamespaceNames().toHashSet() else emptySet()
                 val ctx = InteropContextDetector.detect(doc.charsSequence, caret, aliases, googNs)
                 ctx !is InteropCompletionContext.None

@@ -20,7 +20,8 @@ import cursive.psi.impl.symbols.ClEditorSymbol
 class ClojureScriptDocumentationProvider : AbstractDocumentationProvider() {
 
     override fun generateDoc(element: PsiElement?, originalElement: PsiElement?): String? {
-        val index = JsSymbolIndex.getInstance()
+        val project = element?.project ?: originalElement?.project ?: return null
+        val index = JsSymbolIndex.getInstance(project)
         if (!index.isLoaded) return null
 
         if (element is JsSymbolPsiElement) {

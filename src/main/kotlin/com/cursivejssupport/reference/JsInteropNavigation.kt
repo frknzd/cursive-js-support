@@ -2,13 +2,14 @@ package com.cursivejssupport.reference
 
 import com.cursivejssupport.index.JsSymbolIndex
 import com.cursivejssupport.npm.NpmPackageResolver
+import com.cursivejssupport.semantic.InteropSemanticService
 import com.cursivejssupport.npm.NsAliasResolver
-import com.cursivejssupport.types.JsTypeSources
 import com.cursivejssupport.util.InteropChains
 import com.cursivejssupport.util.JsInteropChain
 import com.cursivejssupport.util.JsInteropPsi
 import com.cursivejssupport.util.JsResolveUtil
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.components.service
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.psi.PsiComment
 import com.intellij.psi.PsiElement
@@ -97,7 +98,7 @@ object JsInteropNavigation {
         }
 
         val file = sourceElement.containingFile ?: return null
-        val index = JsSymbolIndex.getInstance()
+        val index = JsSymbolIndex.getInstance(project)
         val aliases = NsAliasResolver.resolveAliases(file)
 
         val namespace = if (text.contains("/")) text.substringBefore("/") else text
@@ -180,6 +181,8 @@ object JsInteropNavigation {
                     val resolution = JsResolveUtil.resolveTypeRef(receiver, index)
                     var typeName = resolution?.name
                     confident = resolution?.confident == true
+                    resolution?.semanticMembers?.firstOrNull { it.name == memberName }?.navigatable
+                        ?.let { return arrayOf(it) }
                     if (typeName == null && receiverText.startsWith("js/")) {
                         val chain = JsInteropChain.segmentsFromFullText(receiverText)
                         if (chain != null && chain.isNotEmpty()) {
@@ -227,6 +230,12 @@ object JsInteropNavigation {
         val exportKey = exportTail.substringBefore('.').substringBefore('/').trim()
         if (exportKey.isEmpty()) return null
 
+        if (anchorFile != null && !exportTail.contains('.')) {
+            anchorFile.project.service<InteropSemanticService>()
+                .exportDeclaration(anchorFile, packageName, exportKey)
+                ?.let { return arrayOf(it) }
+        }
+
         // Member access hanging off an export (`Alias/Export.member`): when the JavaScript
         // plugin can type-evaluate the export, navigate to the member's real JS declaration.
         if (anchorFile != null && exportTail.contains('.')) {
@@ -234,8 +243,9 @@ object JsInteropNavigation {
                 .map { it.substringBefore('/').trim() }.filter { it.isNotEmpty() }
             if (memberPath.isNotEmpty()) {
                 val parentPath = memberPath.dropLast(1)
-                val target = JsTypeSources.npmExportMembers(anchorFile, packageName, exportKey, parentPath)
-                    ?.firstOrNull { it.name == memberPath.last() }?.navigatable
+                val target = anchorFile.project.service<InteropSemanticService>()
+                    .exportMembers(anchorFile, packageName, exportKey, parentPath)
+                    .firstOrNull { it.name == memberPath.last() }?.navigatable
                 if (target != null) return arrayOf(target)
             }
         }
@@ -303,7 +313,7 @@ object JsInteropNavigation {
         val name = if (isConstructor && rawName != null) rawName.removeSuffix(".") else rawName
         val namespace = rawNamespace
         
-        val index = JsSymbolIndex.getInstance()
+        val index = JsSymbolIndex.getInstance(project)
 
         // Chain step inside (.. root …), (-> root …), (doto root …), etc.
         // Must run before the `when` block: bare `..` steps match none of the other branches,

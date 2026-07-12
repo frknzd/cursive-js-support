@@ -6,6 +6,7 @@ pluginManagement {
     plugins {
         id("org.jetbrains.kotlin.jvm") version "2.2.20"
         id("org.jetbrains.changelog") version "2.5.0"
+        id("dev.detekt") version "2.0.0-alpha.5"
     }
 }
 

@@ -28,50 +28,25 @@ class JsBrowserGlobalsNavigationTest {
         index = JsBrowserGlobalsDocTest.buildBrowserIndex()
     }
 
+@Test
+fun `known globals are indexed`() =
+    listOf("undefined", "Infinity", "NaN", "globalThis", "Object", "Function", "Boolean", "Symbol", "BigInt", "Number", "Date", "String", "RegExp", "Array", "Map", "Set", "WeakMap", "WeakSet", "WeakRef", "FinalizationRegistry", "Promise", "Proxy", "Intl", "ArrayBuffer", "SharedArrayBuffer", "DataView", "Int8Array", "Uint8Array", "Uint8ClampedArray", "Int16Array", "Uint16Array", "Int32Array", "Uint32Array", "Float32Array", "Float64Array", "BigInt64Array", "BigUint64Array", "Error", "AggregateError", "EvalError", "RangeError", "ReferenceError", "SyntaxError", "TypeError", "URIError", "top", "parent", "frames", "opener", "URL", "URLSearchParams", "Blob", "File", "FileList", "FileReader", "FormData", "Headers", "Request", "Response", "ReadableStream", "WritableStream", "TransformStream", "ByteLengthQueuingStrategy", "CountQueuingStrategy", "Event", "EventTarget", "CustomEvent", "AbortController", "AbortSignal", "Worker", "SharedWorker", "MessageChannel", "MessagePort", "BroadcastChannel", "XMLHttpRequest", "WebSocket", "EventSource", "MutationObserver", "IntersectionObserver", "ResizeObserver", "PerformanceObserver", "ReportingObserver", "TextEncoder", "TextDecoder", "DOMParser", "XMLSerializer", "ImageData", "ImageBitmap", "OffscreenCanvas", "Path2D", "AudioContext", "OfflineAudioContext", "MediaStream", "MediaStreamTrack", "MediaRecorder", "RTCPeerConnection", "RTCSessionDescription", "RTCIceCandidate", "Notification", "Animation", "KeyframeEffect", "IDBFactory", "IDBDatabase", "IDBObjectStore", "IDBIndex", "IDBCursor", "IDBTransaction", "IDBKeyRange", "IDBRequest", "IDBOpenDBRequest", "Cache", "CacheStorage", "ServiceWorker", "ServiceWorkerRegistration", "ServiceWorkerContainer", "NodeFilter", "UIEvent", "MouseEvent", "PointerEvent", "KeyboardEvent", "WheelEvent", "TouchEvent", "FocusEvent", "InputEvent", "DragEvent", "ClipboardEvent", "MessageEvent", "ErrorEvent", "ProgressEvent", "StorageEvent", "PopStateEvent", "HashChangeEvent", "BeforeUnloadEvent", "PageTransitionEvent", "AnimationEvent", "TransitionEvent", "Node", "Element", "HTMLElement", "Document", "DocumentFragment", "ShadowRoot", "Text", "Comment", "NodeList", "HTMLCollection", "Range", "Selection", "TreeWalker", "MutationRecord", "IntersectionObserverEntry", "ResizeObserverEntry", "DOMRect", "DOMMatrix", "DOMPoint", "CSS", "CSSStyleDeclaration", "CSSStyleSheet", "StyleSheet", "MediaQueryList", "CanvasRenderingContext2D", "WebGLRenderingContext", "WebGL2RenderingContext").forEach(::assertKnownGlobal)
+
+@Test
+fun `known functions are indexed`() =
+    listOf("eval", "isFinite", "isNaN", "parseFloat", "parseInt", "decodeURI", "decodeURIComponent", "encodeURI", "encodeURIComponent", "structuredClone", "queueMicrotask", "fetch", "alert", "confirm", "prompt", "open", "close", "focus", "blur", "print", "setTimeout", "clearTimeout", "setInterval", "clearInterval", "requestAnimationFrame", "cancelAnimationFrame", "requestIdleCallback", "cancelIdleCallback", "getComputedStyle", "matchMedia", "getSelection", "postMessage", "atob", "btoa", "createImageBitmap", "scroll", "scrollTo", "scrollBy").forEach(::assertKnownFunction)
+
     // ─── ECMAScript primitive globals ────────────────────────────────────────────
 
-    @Test fun `undefined is known global`() { assertKnownGlobal("undefined") }
-    @Test fun `Infinity is known global`() { assertKnownGlobal("Infinity") }
-    @Test fun `NaN is known global`() { assertKnownGlobal("NaN") }
-    @Test fun `globalThis is known global`() { assertKnownGlobal("globalThis") }
 
     // ─── ECMAScript global functions ─────────────────────────────────────────────
 
-    @Test fun `eval is known function`() { assertKnownFunction("eval") }
-    @Test fun `isFinite is known function`() { assertKnownFunction("isFinite") }
-    @Test fun `isNaN is known function`() { assertKnownFunction("isNaN") }
-    @Test fun `parseFloat is known function`() { assertKnownFunction("parseFloat") }
-    @Test fun `parseInt is known function`() { assertKnownFunction("parseInt") }
-    @Test fun `decodeURI is known function`() { assertKnownFunction("decodeURI") }
-    @Test fun `decodeURIComponent is known function`() { assertKnownFunction("decodeURIComponent") }
-    @Test fun `encodeURI is known function`() { assertKnownFunction("encodeURI") }
-    @Test fun `encodeURIComponent is known function`() { assertKnownFunction("encodeURIComponent") }
-    @Test fun `structuredClone is known function`() { assertKnownFunction("structuredClone") }
-    @Test fun `queueMicrotask is known function`() { assertKnownFunction("queueMicrotask") }
 
     // ─── ECMAScript constructor globals ──────────────────────────────────────────
 
-    @Test fun `Object is known global`() { assertKnownGlobal("Object") }
-    @Test fun `Function is known global`() { assertKnownGlobal("Function") }
-    @Test fun `Boolean is known global`() { assertKnownGlobal("Boolean") }
-    @Test fun `Symbol is known global`() { assertKnownGlobal("Symbol") }
-    @Test fun `BigInt is known global`() { assertKnownGlobal("BigInt") }
-    @Test fun `Number is known global`() { assertKnownGlobal("Number") }
     @Test fun `Math global has type Math`() {
         assertEquals("Math", index.resolveGlobalInfo("Math")?.type)
     }
-    @Test fun `Date is known global`() { assertKnownGlobal("Date") }
-    @Test fun `String is known global`() { assertKnownGlobal("String") }
-    @Test fun `RegExp is known global`() { assertKnownGlobal("RegExp") }
-    @Test fun `Array is known global`() { assertKnownGlobal("Array") }
-    @Test fun `Map is known global`() { assertKnownGlobal("Map") }
-    @Test fun `Set is known global`() { assertKnownGlobal("Set") }
-    @Test fun `WeakMap is known global`() { assertKnownGlobal("WeakMap") }
-    @Test fun `WeakSet is known global`() { assertKnownGlobal("WeakSet") }
-    @Test fun `WeakRef is known global`() { assertKnownGlobal("WeakRef") }
-    @Test fun `FinalizationRegistry is known global`() { assertKnownGlobal("FinalizationRegistry") }
-    @Test fun `Promise is known global`() { assertKnownGlobal("Promise") }
-    @Test fun `Proxy is known global`() { assertKnownGlobal("Proxy") }
     @Test fun `Reflect global has type Reflect`() {
         assertEquals("Reflect", index.resolveGlobalInfo("Reflect")?.type)
     }
@@ -81,44 +56,17 @@ class JsBrowserGlobalsNavigationTest {
     @Test fun `Atomics global has type Atomics`() {
         assertEquals("Atomics", index.resolveGlobalInfo("Atomics")?.type)
     }
-    @Test fun `Intl is known global`() { assertKnownGlobal("Intl") }
-    @Test fun `ArrayBuffer is known global`() { assertKnownGlobal("ArrayBuffer") }
-    @Test fun `SharedArrayBuffer is known global`() { assertKnownGlobal("SharedArrayBuffer") }
-    @Test fun `DataView is known global`() { assertKnownGlobal("DataView") }
 
     // ─── Typed arrays ─────────────────────────────────────────────────────────────
 
-    @Test fun `Int8Array is known global`() { assertKnownGlobal("Int8Array") }
-    @Test fun `Uint8Array is known global`() { assertKnownGlobal("Uint8Array") }
-    @Test fun `Uint8ClampedArray is known global`() { assertKnownGlobal("Uint8ClampedArray") }
-    @Test fun `Int16Array is known global`() { assertKnownGlobal("Int16Array") }
-    @Test fun `Uint16Array is known global`() { assertKnownGlobal("Uint16Array") }
-    @Test fun `Int32Array is known global`() { assertKnownGlobal("Int32Array") }
-    @Test fun `Uint32Array is known global`() { assertKnownGlobal("Uint32Array") }
-    @Test fun `Float32Array is known global`() { assertKnownGlobal("Float32Array") }
-    @Test fun `Float64Array is known global`() { assertKnownGlobal("Float64Array") }
-    @Test fun `BigInt64Array is known global`() { assertKnownGlobal("BigInt64Array") }
-    @Test fun `BigUint64Array is known global`() { assertKnownGlobal("BigUint64Array") }
 
     // ─── Error types ──────────────────────────────────────────────────────────────
 
-    @Test fun `Error is known global`() { assertKnownGlobal("Error") }
-    @Test fun `AggregateError is known global`() { assertKnownGlobal("AggregateError") }
-    @Test fun `EvalError is known global`() { assertKnownGlobal("EvalError") }
-    @Test fun `RangeError is known global`() { assertKnownGlobal("RangeError") }
-    @Test fun `ReferenceError is known global`() { assertKnownGlobal("ReferenceError") }
-    @Test fun `SyntaxError is known global`() { assertKnownGlobal("SyntaxError") }
-    @Test fun `TypeError is known global`() { assertKnownGlobal("TypeError") }
-    @Test fun `URIError is known global`() { assertKnownGlobal("URIError") }
 
     // ─── Window globals ───────────────────────────────────────────────────────────
 
     @Test fun `window global has type Window`() { assertEquals("Window", index.resolveGlobalType("window")) }
     @Test fun `self global has type Window`() { assertEquals("Window", index.resolveGlobalType("self")) }
-    @Test fun `top global is known`() { assertKnownGlobal("top") }
-    @Test fun `parent global is known`() { assertKnownGlobal("parent") }
-    @Test fun `frames global is known`() { assertKnownGlobal("frames") }
-    @Test fun `opener global is known`() { assertKnownGlobal("opener") }
 
     // ─── DOM globals ──────────────────────────────────────────────────────────────
 
@@ -140,162 +88,21 @@ class JsBrowserGlobalsNavigationTest {
 
     // ─── Browser window functions ─────────────────────────────────────────────────
 
-    @Test fun `fetch is known function`() { assertKnownFunction("fetch") }
-    @Test fun `alert is known function`() { assertKnownFunction("alert") }
-    @Test fun `confirm is known function`() { assertKnownFunction("confirm") }
-    @Test fun `prompt is known function`() { assertKnownFunction("prompt") }
-    @Test fun `open is known function`() { assertKnownFunction("open") }
-    @Test fun `close is known function`() { assertKnownFunction("close") }
-    @Test fun `focus is known function`() { assertKnownFunction("focus") }
-    @Test fun `blur is known function`() { assertKnownFunction("blur") }
-    @Test fun `print is known function`() { assertKnownFunction("print") }
-    @Test fun `setTimeout is known function`() { assertKnownFunction("setTimeout") }
-    @Test fun `clearTimeout is known function`() { assertKnownFunction("clearTimeout") }
-    @Test fun `setInterval is known function`() { assertKnownFunction("setInterval") }
-    @Test fun `clearInterval is known function`() { assertKnownFunction("clearInterval") }
-    @Test fun `requestAnimationFrame is known function`() { assertKnownFunction("requestAnimationFrame") }
-    @Test fun `cancelAnimationFrame is known function`() { assertKnownFunction("cancelAnimationFrame") }
-    @Test fun `requestIdleCallback is known function`() { assertKnownFunction("requestIdleCallback") }
-    @Test fun `cancelIdleCallback is known function`() { assertKnownFunction("cancelIdleCallback") }
-    @Test fun `getComputedStyle is known function`() { assertKnownFunction("getComputedStyle") }
-    @Test fun `matchMedia is known function`() { assertKnownFunction("matchMedia") }
-    @Test fun `getSelection is known function`() { assertKnownFunction("getSelection") }
-    @Test fun `postMessage is known function`() { assertKnownFunction("postMessage") }
-    @Test fun `atob is known function`() { assertKnownFunction("atob") }
-    @Test fun `btoa is known function`() { assertKnownFunction("btoa") }
-    @Test fun `createImageBitmap is known function`() { assertKnownFunction("createImageBitmap") }
-    @Test fun `scroll is known function`() { assertKnownFunction("scroll") }
-    @Test fun `scrollTo is known function`() { assertKnownFunction("scrollTo") }
-    @Test fun `scrollBy is known function`() { assertKnownFunction("scrollBy") }
 
     // ─── Web API constructor globals ──────────────────────────────────────────────
 
-    @Test fun `URL is known global`() { assertKnownGlobal("URL") }
-    @Test fun `URLSearchParams is known global`() { assertKnownGlobal("URLSearchParams") }
-    @Test fun `Blob is known global`() { assertKnownGlobal("Blob") }
-    @Test fun `File is known global`() { assertKnownGlobal("File") }
-    @Test fun `FileList is known global`() { assertKnownGlobal("FileList") }
-    @Test fun `FileReader is known global`() { assertKnownGlobal("FileReader") }
-    @Test fun `FormData is known global`() { assertKnownGlobal("FormData") }
-    @Test fun `Headers is known global`() { assertKnownGlobal("Headers") }
-    @Test fun `Request is known global`() { assertKnownGlobal("Request") }
-    @Test fun `Response is known global`() { assertKnownGlobal("Response") }
-    @Test fun `ReadableStream is known global`() { assertKnownGlobal("ReadableStream") }
-    @Test fun `WritableStream is known global`() { assertKnownGlobal("WritableStream") }
-    @Test fun `TransformStream is known global`() { assertKnownGlobal("TransformStream") }
-    @Test fun `ByteLengthQueuingStrategy is known global`() { assertKnownGlobal("ByteLengthQueuingStrategy") }
-    @Test fun `CountQueuingStrategy is known global`() { assertKnownGlobal("CountQueuingStrategy") }
-    @Test fun `Event is known global`() { assertKnownGlobal("Event") }
-    @Test fun `EventTarget is known global`() { assertKnownGlobal("EventTarget") }
-    @Test fun `CustomEvent is known global`() { assertKnownGlobal("CustomEvent") }
-    @Test fun `AbortController is known global`() { assertKnownGlobal("AbortController") }
-    @Test fun `AbortSignal is known global`() { assertKnownGlobal("AbortSignal") }
-    @Test fun `Worker is known global`() { assertKnownGlobal("Worker") }
-    @Test fun `SharedWorker is known global`() { assertKnownGlobal("SharedWorker") }
-    @Test fun `MessageChannel is known global`() { assertKnownGlobal("MessageChannel") }
-    @Test fun `MessagePort is known global`() { assertKnownGlobal("MessagePort") }
-    @Test fun `BroadcastChannel is known global`() { assertKnownGlobal("BroadcastChannel") }
-    @Test fun `XMLHttpRequest is known global`() { assertKnownGlobal("XMLHttpRequest") }
-    @Test fun `WebSocket is known global`() { assertKnownGlobal("WebSocket") }
-    @Test fun `EventSource is known global`() { assertKnownGlobal("EventSource") }
-    @Test fun `MutationObserver is known global`() { assertKnownGlobal("MutationObserver") }
-    @Test fun `IntersectionObserver is known global`() { assertKnownGlobal("IntersectionObserver") }
-    @Test fun `ResizeObserver is known global`() { assertKnownGlobal("ResizeObserver") }
-    @Test fun `PerformanceObserver is known global`() { assertKnownGlobal("PerformanceObserver") }
-    @Test fun `ReportingObserver is known global`() { assertKnownGlobal("ReportingObserver") }
-    @Test fun `TextEncoder is known global`() { assertKnownGlobal("TextEncoder") }
-    @Test fun `TextDecoder is known global`() { assertKnownGlobal("TextDecoder") }
-    @Test fun `DOMParser is known global`() { assertKnownGlobal("DOMParser") }
-    @Test fun `XMLSerializer is known global`() { assertKnownGlobal("XMLSerializer") }
-    @Test fun `ImageData is known global`() { assertKnownGlobal("ImageData") }
-    @Test fun `ImageBitmap is known global`() { assertKnownGlobal("ImageBitmap") }
-    @Test fun `OffscreenCanvas is known global`() { assertKnownGlobal("OffscreenCanvas") }
-    @Test fun `Path2D is known global`() { assertKnownGlobal("Path2D") }
-    @Test fun `AudioContext is known global`() { assertKnownGlobal("AudioContext") }
-    @Test fun `OfflineAudioContext is known global`() { assertKnownGlobal("OfflineAudioContext") }
-    @Test fun `MediaStream is known global`() { assertKnownGlobal("MediaStream") }
-    @Test fun `MediaStreamTrack is known global`() { assertKnownGlobal("MediaStreamTrack") }
-    @Test fun `MediaRecorder is known global`() { assertKnownGlobal("MediaRecorder") }
-    @Test fun `RTCPeerConnection is known global`() { assertKnownGlobal("RTCPeerConnection") }
-    @Test fun `RTCSessionDescription is known global`() { assertKnownGlobal("RTCSessionDescription") }
-    @Test fun `RTCIceCandidate is known global`() { assertKnownGlobal("RTCIceCandidate") }
-    @Test fun `Notification is known global`() { assertKnownGlobal("Notification") }
-    @Test fun `Animation is known global`() { assertKnownGlobal("Animation") }
-    @Test fun `KeyframeEffect is known global`() { assertKnownGlobal("KeyframeEffect") }
-    @Test fun `IDBFactory is known global`() { assertKnownGlobal("IDBFactory") }
-    @Test fun `IDBDatabase is known global`() { assertKnownGlobal("IDBDatabase") }
-    @Test fun `IDBObjectStore is known global`() { assertKnownGlobal("IDBObjectStore") }
-    @Test fun `IDBIndex is known global`() { assertKnownGlobal("IDBIndex") }
-    @Test fun `IDBCursor is known global`() { assertKnownGlobal("IDBCursor") }
-    @Test fun `IDBTransaction is known global`() { assertKnownGlobal("IDBTransaction") }
-    @Test fun `IDBKeyRange is known global`() { assertKnownGlobal("IDBKeyRange") }
-    @Test fun `IDBRequest is known global`() { assertKnownGlobal("IDBRequest") }
-    @Test fun `IDBOpenDBRequest is known global`() { assertKnownGlobal("IDBOpenDBRequest") }
-    @Test fun `Cache is known global`() { assertKnownGlobal("Cache") }
-    @Test fun `CacheStorage is known global`() { assertKnownGlobal("CacheStorage") }
-    @Test fun `ServiceWorker is known global`() { assertKnownGlobal("ServiceWorker") }
-    @Test fun `ServiceWorkerRegistration is known global`() { assertKnownGlobal("ServiceWorkerRegistration") }
-    @Test fun `ServiceWorkerContainer is known global`() { assertKnownGlobal("ServiceWorkerContainer") }
-    @Test fun `NodeFilter is known global`() { assertKnownGlobal("NodeFilter") }
 
     // ─── Event type globals ────────────────────────────────────────────────────────
 
-    @Test fun `UIEvent is known global`() { assertKnownGlobal("UIEvent") }
-    @Test fun `MouseEvent is known global`() { assertKnownGlobal("MouseEvent") }
-    @Test fun `PointerEvent is known global`() { assertKnownGlobal("PointerEvent") }
-    @Test fun `KeyboardEvent is known global`() { assertKnownGlobal("KeyboardEvent") }
-    @Test fun `WheelEvent is known global`() { assertKnownGlobal("WheelEvent") }
-    @Test fun `TouchEvent is known global`() { assertKnownGlobal("TouchEvent") }
-    @Test fun `FocusEvent is known global`() { assertKnownGlobal("FocusEvent") }
-    @Test fun `InputEvent is known global`() { assertKnownGlobal("InputEvent") }
-    @Test fun `DragEvent is known global`() { assertKnownGlobal("DragEvent") }
-    @Test fun `ClipboardEvent is known global`() { assertKnownGlobal("ClipboardEvent") }
-    @Test fun `MessageEvent is known global`() { assertKnownGlobal("MessageEvent") }
-    @Test fun `ErrorEvent is known global`() { assertKnownGlobal("ErrorEvent") }
-    @Test fun `ProgressEvent is known global`() { assertKnownGlobal("ProgressEvent") }
-    @Test fun `StorageEvent is known global`() { assertKnownGlobal("StorageEvent") }
-    @Test fun `PopStateEvent is known global`() { assertKnownGlobal("PopStateEvent") }
-    @Test fun `HashChangeEvent is known global`() { assertKnownGlobal("HashChangeEvent") }
-    @Test fun `BeforeUnloadEvent is known global`() { assertKnownGlobal("BeforeUnloadEvent") }
-    @Test fun `PageTransitionEvent is known global`() { assertKnownGlobal("PageTransitionEvent") }
-    @Test fun `AnimationEvent is known global`() { assertKnownGlobal("AnimationEvent") }
-    @Test fun `TransitionEvent is known global`() { assertKnownGlobal("TransitionEvent") }
 
     // ─── DOM element type globals ──────────────────────────────────────────────────
 
-    @Test fun `Node is known global`() { assertKnownGlobal("Node") }
-    @Test fun `Element is known global`() { assertKnownGlobal("Element") }
-    @Test fun `HTMLElement is known global`() { assertKnownGlobal("HTMLElement") }
-    @Test fun `Document is known global`() { assertKnownGlobal("Document") }
-    @Test fun `DocumentFragment is known global`() { assertKnownGlobal("DocumentFragment") }
-    @Test fun `ShadowRoot is known global`() { assertKnownGlobal("ShadowRoot") }
-    @Test fun `Text is known global`() { assertKnownGlobal("Text") }
-    @Test fun `Comment is known global`() { assertKnownGlobal("Comment") }
-    @Test fun `NodeList is known global`() { assertKnownGlobal("NodeList") }
-    @Test fun `HTMLCollection is known global`() { assertKnownGlobal("HTMLCollection") }
-    @Test fun `Range is known global`() { assertKnownGlobal("Range") }
-    @Test fun `Selection is known global`() { assertKnownGlobal("Selection") }
-    @Test fun `TreeWalker is known global`() { assertKnownGlobal("TreeWalker") }
-    @Test fun `MutationRecord is known global`() { assertKnownGlobal("MutationRecord") }
-    @Test fun `IntersectionObserverEntry is known global`() { assertKnownGlobal("IntersectionObserverEntry") }
-    @Test fun `ResizeObserverEntry is known global`() { assertKnownGlobal("ResizeObserverEntry") }
-    @Test fun `DOMRect is known global`() { assertKnownGlobal("DOMRect") }
-    @Test fun `DOMMatrix is known global`() { assertKnownGlobal("DOMMatrix") }
-    @Test fun `DOMPoint is known global`() { assertKnownGlobal("DOMPoint") }
 
     // ─── CSS globals ────────────────────────────────────────────────────────────────
 
-    @Test fun `CSS is known global`() { assertKnownGlobal("CSS") }
-    @Test fun `CSSStyleDeclaration is known global`() { assertKnownGlobal("CSSStyleDeclaration") }
-    @Test fun `CSSStyleSheet is known global`() { assertKnownGlobal("CSSStyleSheet") }
-    @Test fun `StyleSheet is known global`() { assertKnownGlobal("StyleSheet") }
-    @Test fun `MediaQueryList is known global`() { assertKnownGlobal("MediaQueryList") }
 
     // ─── Canvas / WebGL globals ────────────────────────────────────────────────────
 
-    @Test fun `CanvasRenderingContext2D is known global`() { assertKnownGlobal("CanvasRenderingContext2D") }
-    @Test fun `WebGLRenderingContext is known global`() { assertKnownGlobal("WebGLRenderingContext") }
-    @Test fun `WebGL2RenderingContext is known global`() { assertKnownGlobal("WebGL2RenderingContext") }
 
     // ─── Interface member resolution (goto target exists) ─────────────────────────
 

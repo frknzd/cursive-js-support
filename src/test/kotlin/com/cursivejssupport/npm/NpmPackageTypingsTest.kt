@@ -49,4 +49,34 @@ class NpmPackageTypingsTest {
             dir.deleteRecursively()
         }
     }
+
+    @Test
+    fun `resolves exact and wildcard subpath exports`() {
+        val dir = Files.createTempDirectory("npm-typings").toFile()
+        try {
+            File(dir, "package.json").writeText(
+                """{"name":"x","exports":{"./feature":{"types":"./types/feature.d.ts"},"./plugins/*":{"types":"./types/plugins/*.d.ts"}}}""",
+            )
+            File(dir, "types/plugins").mkdirs()
+            File(dir, "types/feature.d.ts").writeText("export declare const feature: boolean")
+            File(dir, "types/plugins/a.d.ts").writeText("export declare const a: boolean")
+            assertEquals("types/feature.d.ts", NpmPackageTypings.typingsEntryRelativePath(dir, "feature"))
+            assertEquals("types/plugins/a.d.ts", NpmPackageTypings.typingsEntryRelativePath(dir, "plugins/a"))
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `resolves types versions subpath`() {
+        val dir = Files.createTempDirectory("npm-typings").toFile()
+        try {
+            File(dir, "package.json").writeText("""{"name":"x","typesVersions":{"*":{"feature":["types/feature"]}}}""")
+            File(dir, "types").mkdirs()
+            File(dir, "types/feature.d.ts").writeText("export declare const feature: boolean")
+            assertEquals("types/feature.d.ts", NpmPackageTypings.typingsEntryRelativePath(dir, "feature"))
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
 }

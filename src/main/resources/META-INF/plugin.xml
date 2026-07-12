@@ -11,14 +11,18 @@
 
     <depends>com.intellij.modules.platform</depends>
     <depends>com.cursiveclojure.cursive</depends>
-    <depends optional="true" config-file="javascript-support.xml">JavaScript</depends>
+    <depends>com.intellij.modules.javascript</depends>
+    <depends>JavaScriptDebugger</depends>
 
     <extensionPoints>
-        <!-- Optional npm-export type providers; the JavaScript-plugin-backed source registers
-             through javascript-support.xml so core never references JS-plugin classes. -->
+        <!-- Additional npm-export type providers can participate in the structured type pipeline. -->
         <extensionPoint
                 qualifiedName="com.cursivejssupport.jsTypeSource"
                 interface="com.cursivejssupport.types.JsTypeSource"
+                dynamic="true"/>
+        <extensionPoint
+                qualifiedName="com.cursivejssupport.buildProfileAdapter"
+                interface="com.cursivejssupport.project.CljsBuildProfileAdapter"
                 dynamic="true"/>
     </extensionPoints>
 
@@ -27,6 +31,7 @@
                 serviceImplementation="com.cursivejssupport.settings.JsSupportSettings"/>
         <projectService
                 serviceImplementation="com.cursivejssupport.npm.JsNpmDependencyWatcher"/>
+        <projectService serviceImplementation="com.cursivejssupport.npm.IntellijNpmResolutionService"/>
 
         <applicationConfigurable
                 parentId="tools"
@@ -41,7 +46,38 @@
         <daemon.highlightInfoFilter
                 implementation="com.cursivejssupport.annotator.JsInteropHighlightFilter"/>
 
+        <localInspection
+                language="Clojure"
+                shortName="ClojureScriptJsInterop"
+                displayName="ClojureScript JavaScript interop"
+                groupName="ClojureScript"
+                enabledByDefault="true"
+                level="WARNING"
+                implementationClass="com.cursivejssupport.inspection.JsInteropInspection"/>
+
+        <intentionAction>
+            <language>Clojure</language>
+            <className>com.cursivejssupport.inspection.AddJsTypeHintIntention</className>
+            <category>ClojureScript</category>
+        </intentionAction>
+        <intentionAction>
+            <language>ClojureScript</language>
+            <className>com.cursivejssupport.inspection.AddJsTypeHintIntention</className>
+            <category>ClojureScript</category>
+        </intentionAction>
+        <localInspection
+                language="ClojureScript"
+                shortName="ClojureScriptJsInterop"
+                displayName="ClojureScript JavaScript interop"
+                groupName="ClojureScript"
+                enabledByDefault="true"
+                level="WARNING"
+                implementationClass="com.cursivejssupport.inspection.JsInteropInspection"/>
+
         <typedHandler implementation="com.cursivejssupport.completion.InteropAutoPopupHandler"/>
+        <consoleFilterProvider implementation="com.cursivejssupport.debug.CljsConsoleFilterProvider"/>
+        <configurationType implementation="com.cursivejssupport.debug.CljsDebugConfigurationType"/>
+        <toolWindow id="ClojureScript JS" anchor="bottom" factoryClass="com.cursivejssupport.project.CljsStatusToolWindowFactory"/>
 
         <completion.contributor
                 order="first"
@@ -64,6 +100,13 @@
         <lang.documentationProvider
                 language="Clojure"
                 implementationClass="com.cursivejssupport.completion.ClojureScriptDocumentationProvider"/>
+
+        <lang.parameterInfo
+                language="Clojure"
+                implementationClass="com.cursivejssupport.completion.JsInteropParameterInfoHandler"/>
+        <lang.parameterInfo
+                language="ClojureScript"
+                implementationClass="com.cursivejssupport.completion.JsInteropParameterInfoHandler"/>
         <lang.documentationProvider
                 language="ClojureScript"
                 implementationClass="com.cursivejssupport.completion.ClojureScriptDocumentationProvider"/>
@@ -84,5 +127,14 @@
                 language="ClojureScript"
                 implementation="com.cursivejssupport.reference.JsInteropGotoDeclarationHandler"/>
 
+    </extensions>
+
+    <extensions defaultExtensionNs="com.cursivejssupport">
+        <jsTypeSource implementation="com.cursivejssupport.npm.JsPluginTypeSource"/>
+    </extensions>
+
+    <extensions defaultExtensionNs="com.jetbrains">
+        <javaScriptDebugAware implementation="com.cursivejssupport.debug.CljsJavaScriptDebugAware"/>
+        <javaScriptDebugAware implementation="com.cursivejssupport.debug.CljcJavaScriptDebugAware"/>
     </extensions>
 </idea-plugin>

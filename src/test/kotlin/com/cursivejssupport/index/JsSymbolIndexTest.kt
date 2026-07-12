@@ -4,10 +4,29 @@ import com.cursivejssupport.parser.JsInterface
 import com.cursivejssupport.parser.JsMember
 import com.cursivejssupport.parser.JsVariableInfo
 import com.cursivejssupport.parser.ParsedSymbols
-import org.junit.Assert.*
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class JsSymbolIndexTest {
+
+    @Test
+    fun `publishes complete snapshots atomically`() {
+        val current = JsSymbolIndex().apply {
+            load(ParsedSymbols(variables = mapOf("old" to JsVariableInfo(type = "Old"))))
+            setLoaded(true)
+        }
+        val replacement = JsSymbolIndex().apply {
+            load(ParsedSymbols(variables = mapOf("new" to JsVariableInfo(type = "New"))))
+        }
+
+        assertEquals("Old", current.resolveGlobalType("old"))
+        assertEquals(null, current.resolveGlobalType("new"))
+        current.publish(replacement)
+        assertEquals(null, current.resolveGlobalType("old"))
+        assertEquals("New", current.resolveGlobalType("new"))
+    }
 
     @Test
     fun testMergeInterfaces() {

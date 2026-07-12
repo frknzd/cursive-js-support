@@ -16,7 +16,6 @@ class JsSupportConfigurable : Configurable {
     private val browserResourceField = JTextField(40)
     private val maxPackagesSpinner = JSpinner(SpinnerNumberModel(400, 1, 5000, 50))
     private val lockfileScan = JCheckBox("Scan lockfiles for transitive npm typings (slow)")
-    private val intellijJsTypes = JCheckBox("Use IntelliJ JavaScript type evaluation for npm exports")
 
     private var root: JPanel? = null
 
@@ -28,7 +27,6 @@ class JsSupportConfigurable : Configurable {
             .addLabeledComponent("Bundled browser symbols resource path:", browserResourceField)
             .addLabeledComponent("Max npm packages to index:", maxPackagesSpinner)
             .addComponent(lockfileScan)
-            .addComponent(intellijJsTypes)
             .panel
         root = panel
         reset()
@@ -40,8 +38,7 @@ class JsSupportConfigurable : Configurable {
         return nodeField.text.trim() != s.nodeExecutablePath ||
             browserResourceField.text.trim() != s.browserSymbolsResourcePath ||
             (maxPackagesSpinner.value as Int) != s.maxNpmPackages ||
-            lockfileScan.isSelected != s.scanLockfileTransitive ||
-            intellijJsTypes.isSelected != s.useIntellijJsTypes
+            lockfileScan.isSelected != s.scanLockfileTransitive
     }
 
     override fun apply() {
@@ -50,7 +47,6 @@ class JsSupportConfigurable : Configurable {
         s.browserSymbolsResourcePath = browserResourceField.text.trim().ifEmpty { "/js/browser-symbols.json.gz" }
         s.maxNpmPackages = maxPackagesSpinner.value as Int
         s.scanLockfileTransitive = lockfileScan.isSelected
-        s.useIntellijJsTypes = intellijJsTypes.isSelected
     }
 
     override fun reset() {
@@ -59,7 +55,6 @@ class JsSupportConfigurable : Configurable {
         browserResourceField.text = s.browserSymbolsResourcePath
         maxPackagesSpinner.value = s.maxNpmPackages
         lockfileScan.isSelected = s.scanLockfileTransitive
-        intellijJsTypes.isSelected = s.useIntellijJsTypes
     }
 
     override fun disposeUIResources() {

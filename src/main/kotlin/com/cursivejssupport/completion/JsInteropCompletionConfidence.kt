@@ -41,7 +41,7 @@ class JsInteropCompletionConfidence : CompletionConfidence() {
         // Use our context detector to decide. If we identify an interop context,
         // we definitely want the popup (ThreeState.NO means "do not skip").
         val aliases = NsAliasResolver.resolveAliases(psiFile)
-        val index = JsSymbolIndex.getInstance()
+        val index = JsSymbolIndex.getInstance(psiFile.project)
         val googNs = if (index.isLoaded) index.getGoogNamespaceNames().toHashSet() else emptySet()
         val ctx = InteropContextDetector.detect(doc.charsSequence, end, aliases, googNs)
         if (ctx !is InteropCompletionContext.None) {

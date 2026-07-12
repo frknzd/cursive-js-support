@@ -14,6 +14,16 @@ data class ResolvedNpmPackage(
     val files: Map<String, String>  // absolute file path → .d.ts content
 )
 
+internal data class NpmPackageRequest(val packageName: String, val subpath: String?) {
+    companion object {
+        fun parse(request: String): NpmPackageRequest {
+            val parts = request.trim('/').split('/')
+            val baseCount = if (request.startsWith("@")) 2 else 1
+            return NpmPackageRequest(parts.take(baseCount).joinToString("/"), parts.drop(baseCount).joinToString("/").ifBlank { null })
+        }
+    }
+}
+
 @Service(Service.Level.PROJECT)
 class NpmPackageResolver(
     private val project: Project?,
@@ -76,6 +86,7 @@ class NpmPackageResolver(
             val nm = File(root, "node_modules")
             if (nm.isDirectory) {
                 names += listInstalledPackages(nm)
+                names += discoverExportSubpaths(nm, names.toList())
             }
         }
         
@@ -108,6 +119,24 @@ class NpmPackageResolver(
                     }
                 } else if (f.name != ".bin") {
                     out += f.name
+                }
+            }
+        }
+        return out
+    }
+
+    private fun discoverExportSubpaths(nodeModulesDir: File, packages: Collection<String>): Set<String> {
+        val out = mutableSetOf<String>()
+        for (packageName in packages) {
+            val pkg = NpmPackageRequest.parse(packageName).packageName
+            val json = File(packageDirUnder(nodeModulesDir, pkg), "package.json")
+            if (!json.isFile) continue
+            runCatching {
+                val exports = mapper.readTree(json).path("exports")
+                if (exports.isObject) {
+                    exports.fieldNames().asSequence()
+                        .filter { it.startsWith("./") && '*' !in it && it != "./package.json" }
+                        .forEach { out += "$pkg/${it.removePrefix("./")}" }
                 }
             }
         }
@@ -249,15 +278,16 @@ class NpmPackageResolver(
      * nested `node_modules` when dependencies are not hoisted to [projectDir]/node_modules.
      */
     fun typingsEntryFile(packageName: String, anchorFilePath: String? = null): File? {
+        val request = NpmPackageRequest.parse(packageName)
         for (nmRoot in candidateNodeModulesDirs(anchorFilePath)) {
-            val pkgDir = packageDirUnder(nmRoot, packageName)
+            val pkgDir = packageDirUnder(nmRoot, request.packageName)
             if (!pkgDir.isDirectory) continue
-            val rel = findPackageOwnTypes(pkgDir) ?: continue
+            val rel = findPackageOwnTypes(pkgDir, request.subpath) ?: continue
             val f = File(pkgDir, rel)
             if (f.isFile) return f
         }
         for (nmRoot in candidateNodeModulesDirs(anchorFilePath)) {
-            val typesDir = atTypesDirUnder(nmRoot, packageName)
+            val typesDir = atTypesDirUnder(nmRoot, request.packageName)
             if (!typesDir.isDirectory) continue
             val idx = File(typesDir, "index.d.ts")
             if (idx.isFile) return idx
@@ -306,11 +336,12 @@ class NpmPackageResolver(
     }
 
     private fun resolve(packageName: String, anchorFilePath: String? = null): ResolvedNpmPackage? {
+        val request = NpmPackageRequest.parse(packageName)
         val files = mutableMapOf<String, String>()
 
         var foundPkgDir: File? = null
         for (nmRoot in candidateNodeModulesDirs(anchorFilePath)) {
-            val d = packageDirUnder(nmRoot, packageName)
+            val d = packageDirUnder(nmRoot, request.packageName)
             if (d.isDirectory) {
                 foundPkgDir = d
                 break
@@ -318,7 +349,7 @@ class NpmPackageResolver(
         }
 
         if (foundPkgDir != null) {
-            val entryDts = findPackageOwnTypes(foundPkgDir)
+            val entryDts = findPackageOwnTypes(foundPkgDir, request.subpath)
             if (entryDts != null) {
                 files.putAll(collectDtsFiles(foundPkgDir, entryDts))
             }
@@ -326,7 +357,7 @@ class NpmPackageResolver(
 
         if (files.isEmpty()) {
             for (nmRoot in candidateNodeModulesDirs(anchorFilePath)) {
-                val typesDir = atTypesDirUnder(nmRoot, packageName)
+                val typesDir = atTypesDirUnder(nmRoot, request.packageName)
                 if (typesDir.isDirectory) {
                     val index = File(typesDir, "index.d.ts")
                     if (index.isFile) {
@@ -340,8 +371,8 @@ class NpmPackageResolver(
         return if (files.isNotEmpty()) ResolvedNpmPackage(packageName, files) else null
     }
 
-    private fun findPackageOwnTypes(pkgDir: File): String? =
-        NpmPackageTypings.typingsEntryRelativePath(pkgDir)
+    private fun findPackageOwnTypes(pkgDir: File, subpath: String? = null): String? =
+        NpmPackageTypings.typingsEntryRelativePath(pkgDir, subpath)
 
     private fun collectDtsFiles(baseDir: File, entryName: String): Map<String, String> {
         val collected = mutableMapOf<String, String>()

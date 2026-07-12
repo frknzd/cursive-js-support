@@ -4,6 +4,7 @@ plugins {
     id("org.jetbrains.kotlin.jvm")
     id("org.jetbrains.changelog")
     id("org.jetbrains.intellij.platform")
+    id("dev.detekt")
 }
 
 intellijPlatform {
@@ -11,10 +12,17 @@ intellijPlatform {
     // Pure-Kotlin plugin with no UI forms / Java @NotNull assertions — instrumentation adds
     // nothing and fails against the local IDE install (no Java Compiler dependency for it).
     instrumentCode = false
+    pluginVerification {
+        // Cursive and JavaScriptDebugger are version-locked to the target IDE build.
+        // Verifying recommended future IDEs produces dependency failures, not compatibility signal.
+        ides {
+            current()
+        }
+    }
 }
 
 group = "com.cursivejssupport"
-version = "0.6.2"
+version = "1.0.0"
 
 repositories {
     mavenCentral()
@@ -33,11 +41,20 @@ dependencies {
         testFramework(TestFrameworkType.Platform)
         plugin("com.cursiveclojure.cursive", "2026.1-261")
         bundledPlugin("JavaScript")
+        bundledPlugin("JavaScriptDebugger")
+        bundledModule("intellij.platform.scriptDebugger.ui")
     }
 }
 
 kotlin {
     jvmToolchain(21)
+}
+
+detekt {
+    buildUponDefaultConfig = true
+    allRules = false
+    config.setFrom(files("config/detekt/detekt.yml"))
+    parallel = true
 }
 
 tasks {

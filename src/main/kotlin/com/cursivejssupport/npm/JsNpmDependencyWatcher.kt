@@ -2,6 +2,7 @@ package com.cursivejssupport.npm
 
 import com.cursivejssupport.index.JsIndexLoader
 import com.cursivejssupport.index.JsSymbolIndex
+import com.cursivejssupport.project.CljsProjectModel
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.logger
@@ -36,6 +37,8 @@ class JsNpmDependencyWatcher(private val project: Project) : Disposable {
         val path = (event.file?.path ?: return false).lowercase()
         if (path.endsWith("package.json")) return true
         if (path.endsWith("shadow-cljs.edn")) return true
+        if (path.endsWith("deps.edn") || path.endsWith("figwheel-main.edn") || path.endsWith(".cljs.edn")) return true
+        if (path.endsWith(".d.ts")) return true
         if (path.endsWith("package-lock.json")) return true
         if (path.endsWith("yarn.lock")) return true
         if (path.endsWith("pnpm-lock.yaml")) return true
@@ -47,18 +50,29 @@ class JsNpmDependencyWatcher(private val project: Project) : Disposable {
         alarm.cancelAllRequests()
         alarm.addRequest({
             if (project.isDisposed) return@addRequest
-            
-            // Clear discovery cache
-            project.service<NpmPackageResolver>().clearCache()
-
-            AppExecutorUtil.getAppExecutorService().execute {
-                try {
-                    JsIndexLoader.loadNpmPackages(project, JsSymbolIndex.getInstance())
-                } catch (e: Exception) {
-                    log.warn("Cursive JS Support: npm re-index failed", e)
-                }
-            }
+            reloadNow()
         }, 1500)
+    }
+
+    fun reloadNow() {
+        project.service<NpmPackageResolver>().clearCache()
+        AppExecutorUtil.getAppExecutorService().execute {
+            val model = CljsProjectModel.getInstance(project)
+            model.refreshProfiles()
+            model.markIndexing()
+            try {
+                val current = JsSymbolIndex.getInstance(project)
+                val replacement = JsSymbolIndex()
+                JsIndexLoader.loadBundledBrowser(replacement)
+                JsIndexLoader.loadBundledGoog(replacement)
+                JsIndexLoader.loadNpmPackages(project, replacement)
+                current.publish(replacement)
+                model.markReady(replacement.indexedNpmPackageCount())
+            } catch (e: Exception) {
+                model.markFailed(e.message ?: e.javaClass.simpleName)
+                log.warn("Cursive JS Support: npm re-index failed", e)
+            }
+        }
     }
 
     override fun dispose() {
