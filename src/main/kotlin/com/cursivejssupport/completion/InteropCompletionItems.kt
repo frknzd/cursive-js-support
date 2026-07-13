@@ -117,9 +117,9 @@ object InteropCompletionItems {
     ): Int {
         val receiver = receiverForDotMember(listAroundCaret)
         val resolution = if (receiver != null) JsResolveUtil.resolveTypeRef(receiver, index) else null
-        if (!resolution?.semanticMembers.isNullOrEmpty()) {
+        if (!resolution?.effectiveSemanticMembers.isNullOrEmpty()) {
             var n = 0
-            for (descriptor in resolution!!.semanticMembers) {
+            for (descriptor in resolution!!.effectiveSemanticMembers) {
                 val want = if (context.asProperty) "property" else "method"
                 if (descriptor.kind != want) continue
                 result.addElement(memberLookup(

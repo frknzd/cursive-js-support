@@ -16,6 +16,13 @@ sealed interface JsTypeRef {
 
     data class Union(val members: List<JsTypeRef>, val intersection: Boolean = false) : JsTypeRef
 
+    data class Record(
+        val properties: Map<String, JsTypeRef>,
+        val optional: Set<String> = emptySet(),
+        val methods: Set<String> = emptySet(),
+        val indexValue: JsTypeRef? = null,
+    ) : JsTypeRef
+
     object Unknown : JsTypeRef {
         override fun toString(): String = "Unknown"
     }
@@ -23,6 +30,7 @@ sealed interface JsTypeRef {
     /** Human-readable form: `Promise<Response>`, `Element[]`, `Node | null`. */
     fun display(): String = when (this) {
         is Named -> when {
+            name == "Tuple" -> args.joinToString(", ", "[", "]") { it.display() }
             name == "Array" && args.size == 1 -> {
                 val el = args[0]
                 if (el is Union) "(${el.display()})[]" else "${el.display()}[]"
@@ -31,6 +39,13 @@ sealed interface JsTypeRef {
             else -> "$name<${args.joinToString(", ") { it.display() }}>"
         }
         is Union -> members.joinToString(if (intersection) " & " else " | ") { it.display() }
+        is Record -> buildList {
+            properties.forEach { (name, type) ->
+                add(if (name in methods) "$name(...): ${type.display()}"
+                else "$name${if (name in optional) "?" else ""}: ${type.display()}")
+            }
+            indexValue?.let { add("[key: string]: ${it.display()}") }
+        }.joinToString("; ", "{ ", " }")
         Unknown -> "any"
     }
 
@@ -56,6 +71,7 @@ sealed interface JsTypeRef {
     fun leafNameds(): List<Named> = when (this) {
         is Named -> listOf(this)
         is Union -> members.flatMap { it.leafNameds() }
+        is Record -> listOf(Named("Object"))
         Unknown -> emptyList()
     }
 
@@ -145,6 +161,24 @@ sealed interface JsTypeRef {
 
         private fun parsePrimary(): JsTypeRef {
             skipWs()
+            if (peek() == '[') {
+                i++
+                skipWs()
+                val entries = mutableListOf<JsTypeRef>()
+                if (peek() != ']') {
+                    entries += parseUnion()
+                    skipWs()
+                    while (peek() == ',') {
+                        i++
+                        entries += parseUnion()
+                        skipWs()
+                    }
+                }
+                if (peek() != ']') throw IllegalArgumentException("unclosed tuple")
+                i++
+                return Named("Tuple", entries)
+            }
+            if (peek() == '{') return parseRecord()
             if (peek() == '(') {
                 i++
                 val inner = parseUnion()
@@ -155,7 +189,7 @@ sealed interface JsTypeRef {
             }
             val start = i
             while (i < s.length && s[i] !in DELIMITERS) i++
-            val name = s.substring(start, i).trim()
+            val name = s.substring(start, i).trim().removePrefix("readonly ")
             if (name.isEmpty()) throw IllegalArgumentException("empty name")
             skipWs()
             if (peek() != '<') return Named(name)
@@ -172,8 +206,60 @@ sealed interface JsTypeRef {
             return Named(name, args)
         }
 
+        private fun parseRecord(): JsTypeRef {
+            i++
+            val properties = linkedMapOf<String, JsTypeRef>()
+            val optional = linkedSetOf<String>()
+            val methods = linkedSetOf<String>()
+            var indexValue: JsTypeRef? = null
+            while (true) {
+                skipRecordSeparators()
+                if (peek() == '}') { i++; break }
+                if (peek() == null) throw IllegalArgumentException("unclosed record")
+                if (peek() == '[') {
+                    while (peek() != null && peek() != ']') i++
+                    if (peek() == ']') i++
+                    skipWs()
+                    if (peek() != ':') throw IllegalArgumentException("invalid index signature")
+                    i++
+                    indexValue = parseUnion()
+                    continue
+                }
+                val start = i
+                while (i < s.length && s[i] !in charArrayOf('?', ':', '(', '}', ';', ',')) i++
+                val name = s.substring(start, i).trim().removePrefix("readonly ").removeSurrounding("\"")
+                if (name.isEmpty()) throw IllegalArgumentException("empty record member")
+                if (peek() == '?') { optional += name; i++ }
+                skipWs()
+                if (peek() == '(') {
+                    methods += name
+                    skipBalanced('(', ')')
+                    skipWs()
+                    if (peek() == ':') { i++; properties[name] = parseUnion() }
+                    continue
+                }
+                if (peek() != ':') throw IllegalArgumentException("invalid record member")
+                i++
+                properties[name] = parseUnion()
+            }
+            return Record(properties, optional, methods, indexValue)
+        }
+
+        private fun skipRecordSeparators() {
+            while (i < s.length && (s[i].isWhitespace() || s[i] == ';' || s[i] == ',')) i++
+        }
+
+        private fun skipBalanced(open: Char, close: Char) {
+            if (peek() != open) return
+            var depth = 0
+            while (i < s.length) {
+                if (s[i] == open) depth++ else if (s[i] == close && --depth == 0) { i++; return }
+                i++
+            }
+        }
+
         companion object {
-            private const val DELIMITERS = "<>[]|&(),"
+            private const val DELIMITERS = "<>[]{}|&(),;:"
         }
     }
 }

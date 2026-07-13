@@ -117,7 +117,8 @@ class JsSymbolIndex {
                 JsInterface(
                     location = existing.location ?: incoming.location,
                     extends = (existing.extends + incoming.extends).distinct(),
-                    members = merged
+                    members = merged,
+                    typeParams = existing.typeParams.ifEmpty { incoming.typeParams },
                 )
             }
         }
@@ -139,7 +140,8 @@ class JsSymbolIndex {
                     JsInterface(
                         location = existing.location ?: incoming.location,
                         extends = (existing.extends + incoming.extends).distinct(),
-                        members = merged
+                        members = merged,
+                        typeParams = existing.typeParams.ifEmpty { incoming.typeParams },
                     )
                 }
             }
@@ -429,6 +431,9 @@ class JsSymbolIndex {
     fun resolveMembersOf(type: JsTypeRef): Map<String, JsResolvedMember> = typeGraph().membersOf(type)
     fun substitutionFor(type: JsTypeRef): Map<String, JsTypeRef> = typeGraph().substitution(type)
     fun substitute(ref: JsTypeRef, substitution: Map<String, JsTypeRef>): JsTypeRef = typeGraph().substitute(ref, substitution)
+    fun resolveCallSignatures(type: JsTypeRef): List<JsMember> = typeGraph().callSignatures(type)
+    fun resolveConstructSignatures(type: JsTypeRef): List<JsMember> = typeGraph().constructSignatures(type)
+    fun resolveIndexedValueType(type: JsTypeRef, numeric: Boolean): JsTypeRef? = typeGraph().indexedValue(type, numeric)
 
     fun allGlobalNames(): Collection<String> = globals.keys
     fun allFunctionNames(): Collection<String> = functions.keys

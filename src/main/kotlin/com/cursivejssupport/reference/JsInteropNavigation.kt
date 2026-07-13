@@ -181,7 +181,7 @@ object JsInteropNavigation {
                     val resolution = JsResolveUtil.resolveTypeRef(receiver, index)
                     var typeName = resolution?.name
                     confident = resolution?.confident == true
-                    resolution?.semanticMembers?.firstOrNull { it.name == memberName }?.navigatable
+                    resolution?.effectiveSemanticMembers?.firstOrNull { it.name == memberName }?.navigatable
                         ?.let { return arrayOf(it) }
                     if (typeName == null && receiverText.startsWith("js/")) {
                         val chain = JsInteropChain.segmentsFromFullText(receiverText)

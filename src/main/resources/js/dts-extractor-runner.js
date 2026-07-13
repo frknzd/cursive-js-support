@@ -7,11 +7,19 @@ function extractSymbols(filesJson) {
     var payload = JSON.parse(filesJson);
     var files = payload.files || payload;
     var roots = payload.roots || Object.keys(files);
+    var rootSet = Object.create(null);
+    roots.forEach(function (root) { rootSet[root] = true; });
     var result = { interfaces: Object.create(null), variables: Object.create(null), functions: Object.create(null), aliases: Object.create(null), moduleExports: null };
     for (var filename in files) {
         if (!Object.prototype.hasOwnProperty.call(files, filename)) continue;
         var sourceFile = ts.createSourceFile(filename, files[filename], ts.ScriptTarget.Latest, true);
-        visitStatements(sourceFile.statements, result, filename, sourceFile);
+        var syntaxResult = rootSet[filename] ? result : {
+            interfaces: result.interfaces,
+            variables: Object.create(null),
+            functions: Object.create(null),
+            aliases: result.aliases
+        };
+        visitStatements(sourceFile.statements, syntaxResult, filename, sourceFile);
     }
 
     // For external modules, use the TypeScript checker to compute the public value surface.
@@ -96,6 +104,22 @@ function extractCheckedModuleExports(files, roots, result) {
             });
         }
     });
+    // Materialize structural aliases (mapped/conditional/indexed/type-literal shapes) so their
+    // instantiated members remain available to the deterministic fallback index.
+    Object.keys(files).forEach(function (filename) {
+        var source = program.getSourceFile(filename);
+        if (!source) return;
+        source.statements.forEach(function (node) {
+            if (node.kind !== ts.SyntaxKind.TypeAliasDeclaration || !node.name) return;
+            var type = checker.getTypeAtLocation(node);
+            var properties = checker.getPropertiesOfType(type);
+            var calls = type.getCallSignatures ? type.getCallSignatures() : [];
+            var constructs = type.getConstructSignatures ? type.getConstructSignatures() : [];
+            if (properties.length > 0 || calls.length > 0 || constructs.length > 0) {
+                addCheckedInterface(node.name.text, type, checker, result, node, 0);
+            }
+        });
+    });
 }
 
 function belongsToExportedType(property, type, checker) {
@@ -178,6 +202,12 @@ function addCheckedInterface(name, type, checker, result, declaration, depth) {
     var constructs = type.getConstructSignatures ? type.getConstructSignatures() : [];
     if (constructs.length > 0) {
         iface.members['new'] = constructs.map(function (signature) {
+            return checkedSignature(signature, checker, declaration);
+        });
+    }
+    var calls = type.getCallSignatures ? type.getCallSignatures() : [];
+    if (calls.length > 0) {
+        iface.members['$call'] = calls.map(function (signature) {
             return checkedSignature(signature, checker, declaration);
         });
     }
@@ -500,13 +530,14 @@ function mergeInterface(node, result, filename, sourceFile) {
         if (m.kind === ts.SyntaxKind.Constructor) {
             if (staticMembers) {
                 if (!Object.prototype.hasOwnProperty.call(staticMembers, 'new')) staticMembers['new'] = [];
-                staticMembers['new'].push({
+                var constructorSignature = {
                     kind: 'method',
                     params: extractParams(m.parameters, result),
                     returns: name,
                     doc: jsDocText(m, sourceFile),
                     location: getLocation(m, filename, sourceFile)
-                });
+                };
+                staticMembers['new'].push(constructorSignature);
             }
             continue;
         }
@@ -514,13 +545,36 @@ function mergeInterface(node, result, filename, sourceFile) {
         // ConstructSignature: `new(args): T` inside an interface (not a class constructor).
         if (m.kind === ts.SyntaxKind.ConstructSignature) {
             if (!Object.prototype.hasOwnProperty.call(targetMembers, 'new')) targetMembers['new'] = [];
-            targetMembers['new'].push({
+            var constructSignature = {
+                kind: 'method',
+                params: extractParams(m.parameters, result),
+                returns: typeName(m.type, result),
+                doc: jsDocText(m, sourceFile),
+                location: getLocation(m, filename, sourceFile)
+            };
+            targetMembers['new'].push(constructSignature);
+            continue;
+        }
+
+        if (m.kind === ts.SyntaxKind.CallSignature) {
+            if (!Object.prototype.hasOwnProperty.call(iface.members, '$call')) iface.members['$call'] = [];
+            iface.members['$call'].push({
                 kind: 'method',
                 params: extractParams(m.parameters, result),
                 returns: typeName(m.type, result),
                 doc: jsDocText(m, sourceFile),
                 location: getLocation(m, filename, sourceFile)
             });
+            continue;
+        }
+
+        if (m.kind === ts.SyntaxKind.IndexSignature) {
+            var indexKind = m.parameters && m.parameters[0] ? typeName(m.parameters[0].type, result) : 'string';
+            targetMembers['$index:' + indexKind] = [{
+                kind: 'property',
+                type: typeName(m.type, result),
+                location: getLocation(m, filename, sourceFile)
+            }];
             continue;
         }
 
@@ -613,8 +667,28 @@ function collectTypeAlias(node, result, filename, sourceFile) {
         // type Foo = Bar — create a transparent alias interface that extends Bar
         var baseType = typeName(type, result);
         if (baseType && baseType !== 'any' && baseType !== 'unknown') {
-            result.interfaces[name] = { location: getLocation(node, filename, sourceFile), extends: [baseType], members: Object.create(null) };
+            result.interfaces[name] = {
+                location: getLocation(node, filename, sourceFile),
+                extends: [baseType],
+                typeParams: node.typeParameters ? node.typeParameters.map(function (tp) { return tp.name.text; }) : [],
+                members: Object.create(null)
+            };
         }
+    }
+    else if (type.kind === ts.SyntaxKind.FunctionType) {
+        result.interfaces[name] = {
+            location: getLocation(node, filename, sourceFile),
+            extends: [],
+            typeParams: node.typeParameters ? node.typeParameters.map(function (tp) { return tp.name.text; }) : [],
+            members: {
+                '$call': [{
+                    kind: 'method',
+                    params: extractParams(type.parameters, result),
+                    returns: typeName(type.type, result),
+                    location: getLocation(type, filename, sourceFile)
+                }]
+            }
+        };
     }
     else if (type.kind === ts.SyntaxKind.UnionType || type.kind === ts.SyntaxKind.IntersectionType) {
         // Union/intersection aliases (e.g. type BodyInit = Blob | string) can't become a single

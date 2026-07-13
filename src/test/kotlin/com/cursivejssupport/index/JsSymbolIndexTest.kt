@@ -2,6 +2,7 @@ package com.cursivejssupport.index
 
 import com.cursivejssupport.parser.JsInterface
 import com.cursivejssupport.parser.JsMember
+import com.cursivejssupport.parser.JsParam
 import com.cursivejssupport.parser.JsVariableInfo
 import com.cursivejssupport.parser.ParsedSymbols
 import org.junit.Assert.assertEquals
@@ -286,5 +287,53 @@ class JsSymbolIndexTest {
         assertEquals("Node", inherited.first?.type)
         assertEquals("Node", index.resolveJsChainType(listOf("range", "startContainer")))
         assertTrue(index.hasMemberName("startContainer"))
+    }
+
+    @Test
+    fun callableIndexAndOptionalMetadataParticipateInTypeFlow() {
+        val index = JsSymbolIndex()
+        index.load(
+            ParsedSymbols(
+                interfaces = mapOf(
+                    "Callable" to JsInterface(
+                        typeParams = listOf("T"),
+                        members = mapOf(
+                            "${'$'}call" to listOf(JsMember(params = listOf(JsParam("value", "T")), returns = "T[]")),
+                            "${'$'}index:string" to listOf(JsMember(kind = "property", type = "T")),
+                            "optional" to listOf(JsMember(kind = "property", type = "T", optional = true)),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        val type = JsTypeRef.parse("Callable<Response>")
+
+        assertEquals("Response[]", index.resolveCallSignatures(type).single().returns)
+        assertEquals("Response", index.resolveIndexedValueType(type, numeric = false)?.display())
+        assertEquals("Response | undefined", index.resolveMembersOf(type)["optional"]?.first
+            ?.let(index::memberValueType)?.let { index.substitute(it, index.substitutionFor(type)) }?.display())
+        assertTrue("${'$'}call" !in index.resolveMembersOf(type))
+    }
+
+    @Test
+    fun unionsExposeOnlySafeSharedMembersWhileIntersectionsExposeAllMembers() {
+        val index = JsSymbolIndex()
+        index.load(ParsedSymbols(interfaces = mapOf(
+            "A" to JsInterface(members = mapOf(
+                "shared" to listOf(JsMember(kind = "property", type = "string")),
+                "onlyA" to listOf(JsMember(kind = "property", type = "boolean")),
+            )),
+            "B" to JsInterface(members = mapOf(
+                "shared" to listOf(JsMember(kind = "property", type = "number")),
+                "onlyB" to listOf(JsMember(kind = "property", type = "boolean")),
+            )),
+        )))
+
+        val union = index.resolveMembersOf(JsTypeRef.parse("A | B"))
+        val intersection = index.resolveMembersOf(JsTypeRef.parse("A & B"))
+
+        assertEquals(setOf("shared"), union.keys)
+        assertEquals("string | number", union["shared"]?.first?.type)
+        assertEquals(setOf("shared", "onlyA", "onlyB"), intersection.keys)
     }
 }

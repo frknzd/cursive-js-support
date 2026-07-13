@@ -17,7 +17,9 @@ internal class JsTypeGraph(
         if (!seen.add(type)) return
         val definition = interfaces[type] ?: return
         definition.members.forEach { (name, overloads) ->
-            out.putIfAbsent(name, JsResolvedMember(type, name, overloads, distance))
+            if (name != CALL_MEMBER && !name.startsWith(INDEX_MEMBER_PREFIX)) {
+                out.putIfAbsent(name, JsResolvedMember(type, name, overloads, distance))
+            }
         }
         definition.extends.forEach { collect(canonical(it), distance + 1, seen, out) }
     }
@@ -39,15 +41,37 @@ internal class JsTypeGraph(
         return expand(JsTypeRef.parse(raw)).primaryName().ifEmpty { raw }
     }
 
-    fun memberType(member: JsMember): JsTypeRef =
-        expand(JsTypeRef.parse(if (member.kind == "method") member.returns else member.type))
+    fun memberType(member: JsMember): JsTypeRef {
+        val type = expand(JsTypeRef.parse(if (member.kind == "method") member.returns else member.type))
+        return if (member.kind != "method" && member.optional) {
+            when (type) {
+                is JsTypeRef.Union -> type.copy(members = (type.members + JsTypeRef.Named("undefined")).distinct())
+                else -> JsTypeRef.Union(listOf(type, JsTypeRef.Named("undefined")))
+            }
+        } else type
+    }
 
     fun membersOf(type: JsTypeRef): Map<String, JsResolvedMember> {
+        if (type is JsTypeRef.Union) {
+            val branches = type.members.mapNotNull { member ->
+                member.primaryNamed()?.let { named -> members(named.name).takeIf { it.isNotEmpty() } }
+            }
+            if (branches.isEmpty()) return emptyMap()
+            val names = if (type.intersection) branches.flatMap { it.keys }.toSet()
+            else branches.map { it.keys.toSet() }.reduce { common, keys -> common intersect keys }
+            return names.associateWith { name ->
+                val hits = branches.mapNotNull { it[name] }
+                val first = hits.first()
+                val overloads = hits.flatMap { it.overloads }.distinct()
+                val merged = if (!type.intersection && overloads.all { it.kind == "property" }) {
+                    listOf(overloads.first().copy(type = overloads.map { it.type }.distinct().joinToString(" | ")))
+                } else overloads
+                first.copy(overloads = merged)
+            }
+        }
         val preferred = type.primaryNamed() ?: return emptyMap()
         val direct = members(preferred.name)
-        if (direct.isNotEmpty() || type !is JsTypeRef.Union) return direct
-        return type.leafNameds().asSequence().filter { it.name != preferred.name }
-            .map { members(it.name) }.firstOrNull(Map<String, JsResolvedMember>::isNotEmpty).orEmpty()
+        return direct
     }
 
     fun substitution(type: JsTypeRef): Map<String, JsTypeRef> {
@@ -56,11 +80,40 @@ internal class JsTypeGraph(
         return params.zip(named.args).toMap()
     }
 
+    fun callSignatures(type: JsTypeRef): List<JsMember> = signatures(type) { it.members[CALL_MEMBER].orEmpty() }
+
+    fun constructSignatures(type: JsTypeRef): List<JsMember> = signatures(type) { it.members[CONSTRUCT_MEMBER].orEmpty() }
+
+    fun indexedValue(type: JsTypeRef, numeric: Boolean): JsTypeRef? {
+        val named = type.primaryNamed() ?: return null
+        val definition = interfaces[named.name] ?: return null
+        val key = if (numeric) "${INDEX_MEMBER_PREFIX}number" else "${INDEX_MEMBER_PREFIX}string"
+        val member = definition.members[key]?.firstOrNull()
+            ?: definition.members["${INDEX_MEMBER_PREFIX}string"]?.firstOrNull()
+            ?: return null
+        return substitute(memberType(member), substitution(type))
+    }
+
+    private fun signatures(type: JsTypeRef, select: (JsInterface) -> List<JsMember>): List<JsMember> {
+        val named = type.primaryNamed() ?: return emptyList()
+        val substitutions = substitution(type)
+        return select(interfaces[named.name] ?: return emptyList()).map { signature ->
+            signature.copy(
+                params = signature.params.map { it.copy(type = substitute(JsTypeRef.parse(it.type), substitutions).display()) },
+                returns = substitute(JsTypeRef.parse(signature.returns), substitutions).display(),
+            )
+        }
+    }
+
     fun substitute(type: JsTypeRef, substitutions: Map<String, JsTypeRef>): JsTypeRef = when {
         substitutions.isEmpty() -> type
         type is JsTypeRef.Named && type.args.isEmpty() -> substitutions[type.name] ?: type
         type is JsTypeRef.Named -> JsTypeRef.Named(type.name, type.args.map { substitute(it, substitutions) })
         type is JsTypeRef.Union -> JsTypeRef.Union(type.members.map { substitute(it, substitutions) }, type.intersection)
+        type is JsTypeRef.Record -> type.copy(
+            properties = type.properties.mapValues { substitute(it.value, substitutions) },
+            indexValue = type.indexValue?.let { substitute(it, substitutions) },
+        )
         else -> type
     }
 
@@ -70,9 +123,18 @@ internal class JsTypeGraph(
             is JsTypeRef.Named -> aliases[type.name]?.let { expand(JsTypeRef.parse(it), depth + 1) }
                 ?: type.copy(args = type.args.map { expand(it, depth + 1) })
             is JsTypeRef.Union -> type.copy(members = type.members.map { expand(it, depth + 1) })
+            is JsTypeRef.Record -> type.copy(
+                properties = type.properties.mapValues { expand(it.value, depth + 1) },
+                indexValue = type.indexValue?.let { expand(it, depth + 1) },
+            )
             JsTypeRef.Unknown -> type
         }
     }
 
-    private companion object { const val MAX_ALIAS_DEPTH = 8 }
+    private companion object {
+        const val MAX_ALIAS_DEPTH = 8
+        const val CALL_MEMBER = "${'$'}call"
+        const val CONSTRUCT_MEMBER = "new"
+        const val INDEX_MEMBER_PREFIX = "${'$'}index:"
+    }
 }

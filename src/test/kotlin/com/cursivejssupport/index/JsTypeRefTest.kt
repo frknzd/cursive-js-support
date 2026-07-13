@@ -35,6 +35,31 @@ class JsTypeRefTest {
         )
     }
 
+    @Test fun `tuple retains positional component types`() {
+        assertEquals(
+            Named("Tuple", listOf(Named("string"), Named("ChangeObject"))),
+            JsTypeRef.parse("[string, ChangeObject]"),
+        )
+        assertEquals("[string, ChangeObject]", JsTypeRef.parse("[string, ChangeObject]").display())
+    }
+
+    @Test fun `structural records retain nested optional and index types`() {
+        val record = JsTypeRef.parse("{ added: boolean; count?: number; nested: { value: string } }")
+
+        assertEquals(
+            JsTypeRef.Record(
+                linkedMapOf(
+                    "added" to Named("boolean"),
+                    "count" to Named("number"),
+                    "nested" to JsTypeRef.Record(mapOf("value" to Named("string"))),
+                ),
+                optional = setOf("count"),
+            ),
+            record,
+        )
+        assertEquals("{ added: boolean; count?: number; nested: { value: string } }", record.display())
+    }
+
     @Test fun union() {
         assertEquals(Union(listOf(Named("Node"), Named("null"))), JsTypeRef.parse("Node|null"))
     }

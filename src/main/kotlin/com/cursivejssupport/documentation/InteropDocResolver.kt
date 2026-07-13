@@ -69,11 +69,25 @@ object InteropDocResolver {
         }
 
         var receiverText: String? = null
-        val receiverType = if (name.startsWith(".")) {
+        val receiverResolution = if (name.startsWith(".")) {
             val receiver = findReceiver(symbol)
             receiverText = receiver?.text?.trim()?.takeIf { it.isNotEmpty() && !it.startsWith("(") }
-            if (receiver != null) JsResolveUtil.resolveType(receiver, index) else null
+            if (receiver != null) JsResolveUtil.resolveTypeRef(receiver, index) else null
         } else null
+        if (receiverResolution != null && name.startsWith(".")) {
+            val memberName = name.removePrefix(".").removePrefix("-")
+            val descriptors = receiverResolution.effectiveSemanticMembers.filter { it.name == memberName }
+            if (descriptors.isNotEmpty()) {
+                val overloads = descriptors.map {
+                    JsMember(kind = it.kind, params = it.params, returns = it.returns, type = it.type, doc = it.doc)
+                }
+                return InteropDocSubject.Member(
+                    memberName, name.startsWith(".-"), receiverResolution.ref.display(), overloads.first(), overloads,
+                    receiverText,
+                )
+            }
+        }
+        val receiverType = receiverResolution?.name
 
         val aliases = symbol.containingFile?.let { symbol.project.service<InteropSemanticService>().bindings(it) } ?: emptyMap()
 

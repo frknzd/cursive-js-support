@@ -5,6 +5,7 @@ import com.cursivejssupport.npm.NpmBindingKind
 import com.cursivejssupport.semantic.InteropSemanticService
 import com.cursivejssupport.parser.JsMember
 import com.cursivejssupport.util.JsResolveUtil
+import com.cursivejssupport.util.CljsPsiTypeRules
 import com.cursivejssupport.util.JsInteropPsi
 import com.intellij.openapi.components.service
 import com.intellij.lang.parameterInfo.CreateParameterInfoContext
@@ -74,14 +75,14 @@ class JsInteropParameterInfoHandler : ParameterInfoHandler<PsiElement, JsMember>
         if (text.startsWith(".")) {
             val receiver = children.getOrNull(1)
             val type = JsResolveUtil.resolveTypeRef(receiver, index) ?: return emptyList()
-            val semantic = type.semanticMembers.filter { it.name == text.removePrefix(".").removePrefix("-") }
+            val semantic = type.effectiveSemanticMembers.filter { it.name == text.removePrefix(".").removePrefix("-") }
                 .map { JsMember(kind = it.kind, params = it.params, returns = it.returns, type = it.type, doc = it.doc) }
             if (semantic.isNotEmpty()) return semantic
             return index.resolveMembersOf(type.ref)[text.removePrefix(".").removePrefix("-")]?.overloads.orEmpty()
         }
         if (text.startsWith("js/")) return index.resolveFunctions(text.removePrefix("js/")).orEmpty()
         val semantics = list.project.service<InteropSemanticService>()
-        val binding = semantics.bindings(list.containingFile)[text]
+        val binding = CljsPsiTypeRules.npmBinding(list.containingFile, text)
         if (binding != null && binding.kind in setOf(NpmBindingKind.REFER, NpmBindingKind.DEFAULT)) {
             val descriptor = semantics.exportType(
                 list.containingFile, binding.packageName, binding.exportName ?: "default",

@@ -64,7 +64,7 @@ class NpmInteropCorpusTest {
                     failures += "$packageName: no declaration entry"
                     return@forEach
                 }
-                val symbols = parser.parse(resolved.files)
+                val symbols = parser.parse(resolved.files, resolved.entryFiles)
                 val index = JsSymbolIndex().apply { loadNpmPackage(packageName, symbols) }
                 val actual = index.npmExportNames(packageName).toSet()
                 val referenceExports = reference.path(packageName).path("exports")
@@ -78,6 +78,15 @@ class NpmInteropCorpusTest {
                 }
                 val missingAnchors = required.filterNot(actual::contains)
                 if (missingAnchors.isNotEmpty()) failures += "$packageName: missing representative exports $missingAnchors"
+                if (packageName == "diff") {
+                    val changeMembers = index.resolveMembers("ChangeObject").keys
+                    val missingChangeMembers = setOf("added", "removed", "count", "value") - changeMembers
+                    if (missingChangeMembers.isNotEmpty()) {
+                        failures += "diff/ChangeObject: missing callback element members $missingChangeMembers " +
+                            "(files=${resolved.files.keys.filter { it.endsWith("types.d.ts") }}, " +
+                            "interfaces=${symbols.interfaces.keys.filter { "Change" in it }})"
+                    }
+                }
 
                 referenceExports.filter { it.path("name").asText() in actual }.forEach { expectedExport ->
                     val exportName = expectedExport.path("name").asText()

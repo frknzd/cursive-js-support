@@ -259,4 +259,31 @@ class DtsParserTest {
             assertEquals("NAMESPACE${'$'}ReactDOM", symbols.variables["default"]?.type)
         }
     }
+
+    @Test
+    fun `preserves callable aliases constructors and mapped type members`() {
+        val nodeExecutable = DtsParser.findNodeExecutable()
+        assumeNotNull(nodeExecutable)
+
+        DtsParser(nodeExecutable!!).use { parser ->
+            val source = """
+                type Callback<T> = (value: T, index: number) => boolean;
+                interface Factory<T> {
+                    (value: T): T[];
+                    new (value: T): Box<T>;
+                }
+                interface Source { added: boolean; removed: boolean; }
+                type Flags = { [K in keyof Source]: string };
+                interface Box<T> { value: T; }
+                interface Dictionary { [key: string]: Box<number>; }
+            """.trimIndent()
+
+            val symbols = parser.parse(mapOf("callables.d.ts" to source))
+            assertEquals(listOf("T", "number"), symbols.interfaces["Callback"]?.members?.get("${'$'}call")?.first()?.params?.map { it.type })
+            assertTrue(symbols.interfaces["Factory"]?.members?.get("${'$'}call").orEmpty().any { it.returns == "T[]" })
+            assertTrue(symbols.interfaces["Factory"]?.members?.get("new").orEmpty().any { it.returns == "Box<T>" })
+            assertEquals(setOf("added", "removed"), symbols.interfaces["Flags"]?.members?.keys)
+            assertEquals("Box<number>", symbols.interfaces["Dictionary"]?.members?.get("${'$'}index:string")?.single()?.type)
+        }
+    }
 }

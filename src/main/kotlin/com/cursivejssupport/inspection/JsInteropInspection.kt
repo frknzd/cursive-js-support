@@ -117,13 +117,13 @@ open class JsInteropInspection : LocalInspectionTool() {
         val receiverType = JsResolveUtil.resolveTypeRef(receiver, index) ?: return
         if (!receiverType.confident) return
         val memberName = symbol.text.removePrefix(".").removePrefix("-")
-        val semanticOverloads = receiverType.semanticMembers.filter { it.name == memberName }.map {
+        val semanticOverloads = receiverType.effectiveSemanticMembers.filter { it.name == memberName }.map {
             JsMember(kind = it.kind, params = it.params, returns = it.returns, type = it.type, doc = it.doc)
         }
         val resolved = if (semanticOverloads.isEmpty()) index.resolveMembersOf(receiverType.ref)[memberName] else null
         if (semanticOverloads.isEmpty() && resolved == null) {
-            if (receiverType.semanticMembers.isNotEmpty()) {
-                val replacement = nearest(memberName, receiverType.semanticMembers.map { it.name })
+            if (receiverType.effectiveSemanticMembers.isNotEmpty()) {
+                val replacement = nearest(memberName, receiverType.effectiveSemanticMembers.map { it.name })
                 holder.registerProblem(
                     symbol, "Type '${receiverType.name}' has no member '$memberName'",
                     ProblemHighlightType.GENERIC_ERROR_OR_WARNING,

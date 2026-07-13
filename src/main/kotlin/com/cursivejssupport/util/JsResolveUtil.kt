@@ -3,15 +3,14 @@ package com.cursivejssupport.util
 import com.cursivejssupport.index.JsSymbolIndex
 import com.cursivejssupport.index.JsTypeRef
 import com.cursivejssupport.npm.NpmBindingKind
-import com.cursivejssupport.npm.NsAliasResolver
 import com.cursivejssupport.semantic.InteropSemanticService
-import com.cursivejssupport.types.JsMemberDescriptor
 import com.cursivejssupport.types.JsCallSignature
+import com.cursivejssupport.types.JsMemberDescriptor
+import com.intellij.openapi.components.service
 import com.intellij.psi.PsiComment
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiPolyVariantReference
 import com.intellij.psi.PsiWhiteSpace
-import com.intellij.openapi.components.service
 import com.intellij.psi.util.PsiTreeUtil
 import cursive.psi.api.ClList
 import cursive.psi.impl.symbols.ClEditorSymbol
@@ -36,7 +35,16 @@ data class TypeResolution(
 ) {
     val name: String get() = ref.primaryName()
     val confidence: Double get() = if (confident) 1.0 else 0.5
+    val effectiveSemanticMembers: List<JsMemberDescriptor>
+        get() = semanticMembers.ifEmpty { structuralMembers(ref) }
 }
+
+private fun structuralMembers(ref: JsTypeRef): List<JsMemberDescriptor> = (ref as? JsTypeRef.Record)?.properties
+    ?.map { (name, type) ->
+        val projected = if (name in ref.optional) JsTypeRef.Union(listOf(type, JsTypeRef.Named("undefined"))) else type
+        if (name in ref.methods) JsMemberDescriptor(name = name, kind = "method", returns = projected.display())
+        else JsMemberDescriptor(name = name, kind = "property", type = projected.display())
+    }.orEmpty()
 
 object JsResolveUtil {
 
@@ -61,6 +69,7 @@ object JsResolveUtil {
     private class State(var depth: Int) {
         val visitedDefinitions: MutableSet<PsiElement> =
             Collections.newSetFromMap(IdentityHashMap())
+        val parameterBindings: MutableMap<PsiElement, TypeResolution> = IdentityHashMap()
     }
 
     private const val MAX_DEPTH = 8
@@ -97,13 +106,35 @@ object JsResolveUtil {
     }
 
     private fun resolveInner(element: PsiElement, index: JsSymbolIndex, state: State): TypeResolution? {
+        CljsPsiTypeRules.literalType(element)?.let { return it }
         // 1. Constructor call (Fuse. ...) -> instance type
         if (element is ClList) {
             val head = getHead(element)
             if (head is ClEditorSymbol) {
                 val ht = head.text ?: ""
                 if (ht.endsWith(".") && ht.length > 1 && !ht.startsWith(".")) {
-                    return named(ht.removeSuffix("."))
+                    val constructorName = ht.removeSuffix(".")
+                    val arguments = meaningfulChildren(element).drop(1).map { resolve(it, index, state)?.ref }
+                    val binding = head.containingFile?.let { CljsPsiTypeRules.npmBinding(it, constructorName) }
+                    if (binding != null && binding.kind in setOf(NpmBindingKind.REFER, NpmBindingKind.DEFAULT)) {
+                        val export = binding.exportName ?: "default"
+                        val descriptor = head.project.service<InteropSemanticService>()
+                            .exportType(head.containingFile, binding.packageName, export)
+                        JsTypeFlow.inferCall(descriptor?.constructSignatures.orEmpty(), arguments)?.let {
+                            return TypeResolution(it.type, descriptor?.confidence?.let { confidence -> confidence >= 0.9 } == true)
+                        }
+                        val indexedType = index.resolveNpmExportType(binding.packageName, export)?.let(JsTypeRef::parse)
+                        val indexedSignatures = indexedType?.let(index::resolveConstructSignatures).orEmpty()
+                            .ifEmpty { indexedType?.let { index.resolveMembersOf(it)["new"]?.overloads }.orEmpty() }
+                        JsTypeFlow.inferIndexedCall(indexedSignatures, arguments)?.let {
+                            return TypeResolution(it.type, true, InferenceProvenance.CALL_SIGNATURE)
+                        }
+                    }
+                    val staticType = index.resolveGlobalType(constructorName)?.let(JsTypeRef::parse)
+                    val signatures = staticType?.let(index::resolveConstructSignatures).orEmpty()
+                        .ifEmpty { staticType?.let { index.resolveMembersOf(it)["new"]?.overloads }.orEmpty() }
+                    JsTypeFlow.inferIndexedCall(signatures, arguments)?.let { return TypeResolution(it.type, true) }
+                    return named(constructorName)
                 }
             }
         }
@@ -128,7 +159,7 @@ object JsResolveUtil {
         // 2. NPM alias type resolution — depends on the binding kind
         val file = element.containingFile
         if (file != null) {
-            val binding = NsAliasResolver.resolveAliases(file)[full]
+            val binding = CljsPsiTypeRules.npmBinding(file, full)
             if (binding != null) {
                 val semanticExport = when (binding.kind) {
                     NpmBindingKind.REFER -> binding.exportName ?: full
@@ -200,35 +231,42 @@ object JsResolveUtil {
         if (element.text == "js") return named("Window")
 
         // 5. Type hint on the symbol itself
-        val hint = findTypeHint(element)
-        if (hint != null) sanitizeType(hint)?.let { return named(it, provenance = InferenceProvenance.TYPE_HINT) }
+        val hint = CljsPsiTypeRules.findTypeHint(element)
+        if (hint != null) CljsPsiTypeRules.sanitizeType(hint)?.let { return named(it, provenance = InferenceProvenance.TYPE_HINT) }
 
         // 6. Resolve to definition and check its type
         val definition = resolveDefinition(element)
         if (definition != null && definition !== element) {
+            state.parameterBindings[definition]?.let {
+                return CljsPsiTypeRules.narrow(element, it.copy(provenance = InferenceProvenance.CALL_SIGNATURE), index)
+            }
             if (!state.visitedDefinitions.add(definition)) return null
             try {
                 // Check hint on definition (e.g., function param [^js/Type el])
-                val defHint = findTypeHint(definition)
-                if (defHint != null) sanitizeType(defHint)?.let { return named(it, provenance = InferenceProvenance.TYPE_HINT) }
+                val defHint = CljsPsiTypeRules.findTypeHint(definition)
+                if (defHint != null) CljsPsiTypeRules.sanitizeType(defHint)?.let { return named(it, provenance = InferenceProvenance.TYPE_HINT) }
 
                 // If it's a let-binding, try to resolve the type of its initializer
                 val initializer = findBindingInitializer(definition)
                 if (initializer != null) {
                     return resolve(initializer, index, state)?.copy(provenance = InferenceProvenance.LEXICAL_BINDING)
+                        ?.let { CljsPsiTypeRules.narrow(element, it, index) }
                 }
 
                 findDestructuredBindingInitializer(definition)?.let { destructured ->
                     val container = resolve(destructured, index, state) ?: return@let
-                    val elementType = (container.ref as? JsTypeRef.Named)
-                        ?.takeIf { it.name in setOf("Array", "ReadonlyArray", "NodeListOf", "HTMLCollectionOf") }
-                        ?.args?.firstOrNull()
+                    val elementType = CljsPsiTypeRules.destructuredBindingType(definition, container, index)
                     if (elementType != null) {
-                        return TypeResolution(elementType, container.confident, InferenceProvenance.LEXICAL_BINDING)
+                        return CljsPsiTypeRules.narrow(element,
+                            TypeResolution(elementType, container.confident, InferenceProvenance.LEXICAL_BINDING), index)
                     }
                 }
 
-                resolveCallbackParameter(definition, index, state)?.let { return it }
+                CljsCallbackInference.resolveParameter(
+                    definition, index,
+                    resolve = { resolve(it, index, state) },
+                    threadedInput = { threadedInputBefore(it, index, state) },
+                )?.let { return CljsPsiTypeRules.narrow(element, it, index) }
 
                 // defn name symbol: the symbol denotes a function, but a *call* resolves to the
                 // return type — handled in resolveList. A bare reference has no member type.
@@ -247,35 +285,13 @@ object JsResolveUtil {
 
     private fun resolveList(element: ClList, index: JsSymbolIndex, state: State): TypeResolution? {
         val head = getHead(element)
-        if (head is ClEditorSymbol && head.text == "set!") {
-            val children = meaningfulChildren(element)
-            val valueArg = children.getOrNull(2)
-            if (valueArg != null) return resolve(valueArg, index, state)
-            return null
-        }
-        if (head is ClEditorSymbol && head.text in setOf("if", "if-not", "if-let", "if-some")) {
-            val branches = meaningfulChildren(element).drop(2).mapNotNull { resolve(it, index, state) }
-            return union(branches)
-        }
-        if (head is ClEditorSymbol && head.text in setOf("cond", "condp", "case")) {
-            val values = meaningfulChildren(element).drop(1)
-                .filterIndexed { i, _ -> i % 2 == 1 }
-                .mapNotNull { resolve(it, index, state) }
-            return union(values)
-        }
-        if (head is ClEditorSymbol && head.text in setOf("first", "second", "last", "nth", "aget")) {
-            val collection = meaningfulChildren(element).getOrNull(1)
-            val resolved = resolve(collection, index, state)
-            val elementType = (resolved?.ref as? JsTypeRef.Named)?.args?.firstOrNull()
-            if (elementType != null) return TypeResolution(elementType, resolved.confident, InferenceProvenance.CALL_SIGNATURE)
-        }
         if (head is ClEditorSymbol) {
-            val ht = head.text
-            if (ht == "goog.object/get" || ht == "js/goog.object.get") {
-                val children = meaningfulChildren(element)
-                val obj = children.getOrNull(1)
-                if (obj != null) return resolve(obj, index, state)
-            }
+            CljsCoreTypeRules.resolve(
+                element, head.text, index,
+                resolve = { resolve(it, index, state) },
+                callbackReturn = { callback, arguments -> callbackReturnType(callback, index, state, arguments) },
+                union = ::union,
+            )?.let { return it }
         }
         // Chain macros: (.. root step…), (-> root step…), (doto root step…), …
         val chainForm = InteropChains.parse(element)
@@ -293,24 +309,57 @@ object JsResolveUtil {
             val memberName = head.text.removePrefix(".").removePrefix("-")
             val receiver = getSecondElement(element)
             val receiverType = resolve(receiver, index, state) ?: return null
+            receiverType.effectiveSemanticMembers.firstOrNull { it.name == memberName }?.let { member ->
+                val value = if (member.kind == "method") member.returns else member.type
+                return TypeResolution(JsTypeRef.parse(value), receiverType.confident, InferenceProvenance.CALL_SIGNATURE)
+            }
 
-            val callback = meaningfulChildren(element).getOrNull(2) as? ClList
-            if (callback != null && memberName in setOf("then", "map", "flatMap")) {
-                callbackReturnType(callback, index, state)?.let { callbackResult ->
+            val callback = meaningfulChildren(element).getOrNull(2)
+            if (callback != null && memberName in setOf("then", "catch", "map", "flatMap")) {
+                val input = if (memberName in setOf("then", "catch")) receiverType.ref.primaryNamed()?.args?.firstOrNull()
+                else collectionElementType(receiverType.ref)
+                callbackReturnType(callback, index, state,
+                    listOfNotNull(input?.let { TypeResolution(it, receiverType.confident) }))?.let { callbackResult ->
                     val container = when (memberName) {
-                        "then" -> "Promise"
+                        "then", "catch" -> "Promise"
                         else -> "Array"
                     }
+                    val result = when (memberName) {
+                        "then" -> JsTypeFlow.awaited(callbackResult.ref)
+                        "catch" -> JsTypeFlow.union(listOfNotNull(
+                            receiverType.ref.primaryNamed()?.args?.firstOrNull(),
+                            JsTypeFlow.awaited(callbackResult.ref),
+                        ))
+                        "flatMap" -> collectionElementType(callbackResult.ref) ?: callbackResult.ref
+                        else -> callbackResult.ref
+                    }
                     return TypeResolution(
-                        JsTypeRef.Named(container, listOf(callbackResult.ref)),
+                        JsTypeRef.Named(container, listOf(result)),
                         receiverType.confident && callbackResult.confident,
                         InferenceProvenance.CALL_SIGNATURE,
                     )
                 }
             }
 
-            val member = index.resolveMembersOf(receiverType.ref)[memberName]?.first ?: return null
-            val projected = index.substitute(index.memberValueType(member), index.substitutionFor(receiverType.ref))
+            if (memberName == "finally") return receiverType
+            val resolvedMember = index.resolveMembersOf(receiverType.ref)[memberName] ?: return null
+            val substitution = index.substitutionFor(receiverType.ref)
+            val projectedSignatures = resolvedMember.overloads.filter { it.kind == "method" }.map { signature ->
+                signature.copy(
+                    params = signature.params.map { param ->
+                        param.copy(type = index.substitute(JsTypeRef.parse(param.type), substitution).display())
+                    },
+                    returns = index.substitute(JsTypeRef.parse(signature.returns), substitution).display(),
+                )
+            }
+            if (projectedSignatures.isNotEmpty()) {
+                val arguments = meaningfulChildren(element).drop(2).map { resolve(it, index, state)?.ref }
+                JsTypeFlow.inferIndexedCall(projectedSignatures, arguments)?.let {
+                    return TypeResolution(it.type, receiverType.confident, InferenceProvenance.CALL_SIGNATURE)
+                }
+            }
+            val member = resolvedMember.first ?: return null
+            val projected = index.substitute(index.memberValueType(member), substitution)
             if (projected == JsTypeRef.Unknown) return null
             return TypeResolution(projected, receiverType.confident)
         }
@@ -321,34 +370,24 @@ object JsResolveUtil {
             return resolve(last, index, state)
         }
         if (head is ClEditorSymbol && !head.text.startsWith(".")) {
-            val binding = head.containingFile?.let { NsAliasResolver.resolveAliases(it)[head.text] }
+            val binding = head.containingFile?.let { CljsPsiTypeRules.npmBinding(it, head.text) }
             if (binding != null && binding.kind in setOf(NpmBindingKind.REFER, NpmBindingKind.DEFAULT)) {
                 val export = binding.exportName ?: "default"
                 val semantic = head.project.service<InteropSemanticService>()
                     .exportType(head.containingFile, binding.packageName, export)
-                val semanticReturns = semantic?.callSignatures.orEmpty().map { it.returns }
-                    .filter { it != JsTypeRef.Unknown }.distinct()
-                val semanticReturnMembers = semantic?.callSignatures.orEmpty()
-                    .flatMap { it.returnMembers }.distinctBy { it.name }
-                if (semanticReturns.isNotEmpty() || semanticReturnMembers.isNotEmpty()) {
+                val arguments = meaningfulChildren(element).drop(1).map { resolve(it, index, state)?.ref }
+                JsTypeFlow.inferCall(semantic?.callSignatures.orEmpty(), arguments)?.let { inferred ->
                     return TypeResolution(
-                        when (semanticReturns.size) {
-                            0 -> JsTypeRef.Unknown
-                            1 -> semanticReturns.first()
-                            else -> JsTypeRef.Union(semanticReturns)
-                        },
+                        inferred.type,
                         semantic?.confidence?.let { it >= 0.9 } == true,
                         InferenceProvenance.CALL_SIGNATURE,
-                        semanticReturnMembers,
+                        inferred.returnMembers,
                     )
                 }
                 val returns = index.resolveNpmExportMembers(binding.packageName, export).orEmpty()
-                    .map { JsTypeRef.parse(it.returns) }
-                    .filter { it != JsTypeRef.Unknown }
-                    .distinct()
-                if (returns.isNotEmpty()) {
+                JsTypeFlow.inferIndexedCall(returns, arguments)?.let { inferred ->
                     return TypeResolution(
-                        if (returns.size == 1) returns.first() else JsTypeRef.Union(returns),
+                        inferred.type,
                         true,
                         InferenceProvenance.CALL_SIGNATURE,
                     )
@@ -361,7 +400,8 @@ object JsResolveUtil {
             if (definition != null && definition !== head) {
                 if (state.visitedDefinitions.add(definition)) {
                     try {
-                        defnReturnType(definition, index, state)?.let { return it }
+                        val arguments = meaningfulChildren(element).drop(1).map { resolve(it, index, state) }
+                        defnReturnType(definition, index, state, arguments)?.let { return it }
                     } finally {
                         state.visitedDefinitions.remove(definition)
                     }
@@ -376,7 +416,12 @@ object JsResolveUtil {
      * function's return type: an explicit `^js/Type` hint on the name wins, otherwise the type
      * of the last body expression. Multi-arity defns union all inferred return types.
      */
-    private fun defnReturnType(definition: PsiElement, index: JsSymbolIndex, state: State): TypeResolution? {
+    private fun defnReturnType(
+        definition: PsiElement,
+        index: JsSymbolIndex,
+        state: State,
+        arguments: List<TypeResolution?> = emptyList(),
+    ): TypeResolution? {
         val defnList = definition.parent as? ClList ?: return null
         val children = meaningfulChildren(defnList)
         val headText = (children.firstOrNull() as? ClEditorSymbol)?.text ?: return null
@@ -385,8 +430,8 @@ object JsResolveUtil {
             JsInteropPsi.enclosingEditorSymbol(children.getOrNull(1) ?: return null) !== definition
         ) return null
 
-        findTypeHint(definition)?.let { hint ->
-            sanitizeType(hint)?.let { return named(it) }
+        CljsPsiTypeRules.findTypeHint(definition)?.let { hint ->
+            CljsPsiTypeRules.sanitizeType(hint)?.let { return named(it) }
         }
 
         // Single arity: (defn name [params] body…) — body is everything after the param vector.
@@ -395,12 +440,59 @@ object JsResolveUtil {
         val paramVectorIdx = afterName.indexOfFirst { it.javaClass.simpleName.contains("ClVector") }
         if (paramVectorIdx >= 0) {
             val body = afterName.drop(paramVectorIdx + 1).lastOrNull() ?: return null
-            return resolve(body, index, state)
+            return withParameterBindings(afterName[paramVectorIdx], arguments, state) { resolve(body, index, state) }
         }
-        val returns = afterName.filterIsInstance<ClList>().mapNotNull { arity ->
-            meaningfulChildren(arity).lastOrNull()?.let { resolve(it, index, state) }
+        val arities = afterName.filterIsInstance<ClList>()
+        val matchingArities = arities.filter { arity ->
+            val params = meaningfulChildren(arity).firstOrNull { it.javaClass.simpleName.contains("ClVector") }
+                ?: return@filter false
+            val entries = parameterElements(params)
+            val rest = entries.indexOfFirst { it.text == "&" }
+            if (rest >= 0) arguments.size >= rest else arguments.size == entries.size
+        }.ifEmpty { arities }
+        val returns = matchingArities.mapNotNull { arity ->
+            val parts = meaningfulChildren(arity)
+            val params = parts.firstOrNull { it.javaClass.simpleName.contains("ClVector") } ?: return@mapNotNull null
+            withParameterBindings(params, arguments, state) {
+                parts.lastOrNull()?.let { resolve(it, index, state) }
+            }
         }
         return union(returns)
+    }
+
+    private fun withParameterBindings(
+        vector: PsiElement,
+        arguments: List<TypeResolution?>,
+        state: State,
+        block: () -> TypeResolution?,
+    ): TypeResolution? {
+        val entries = parameterElements(vector)
+        val restMarker = entries.indexOfFirst { it.text == "&" }
+        val parameters = entries.filter { it.text != "&" }
+        val previous = parameters.associateWith { state.parameterBindings[it] }
+        val fixedCount = if (restMarker >= 0) restMarker else parameters.size
+        parameters.take(fixedCount).zip(arguments).forEach { (parameter, argument) ->
+            if (argument != null) state.parameterBindings[parameter] = argument
+        }
+        if (restMarker >= 0) {
+            val rest = entries.getOrNull(restMarker + 1)
+            val types = arguments.drop(fixedCount).mapNotNull { it?.ref }
+            if (rest != null && types.isNotEmpty()) {
+                state.parameterBindings[rest] = TypeResolution(
+                    JsTypeRef.Named("Array", listOf(JsTypeFlow.union(types))), true, InferenceProvenance.CALL_SIGNATURE)
+            }
+        }
+        return try {
+            block()
+        } finally {
+            previous.forEach { (parameter, value) ->
+                if (value == null) state.parameterBindings.remove(parameter) else state.parameterBindings[parameter] = value
+            }
+        }
+    }
+
+    private fun parameterElements(vector: PsiElement): List<PsiElement> = vector.children.filter {
+        it !is PsiWhiteSpace && it !is PsiComment && it.text !in setOf("[", "]")
     }
 
     /** Last body expression of a body-wrapping form, skipping the head and any binding vector. */
@@ -451,53 +543,119 @@ object JsResolveUtil {
     }
 
     private fun findDestructuredBindingInitializer(definition: PsiElement): PsiElement? {
-        var pattern: PsiElement? = definition.parent
-        while (pattern != null && !pattern.javaClass.simpleName.contains("ClVector") &&
-            !pattern.javaClass.simpleName.contains("ClMap")) {
-            pattern = pattern.parent
+        var destructuring: PsiElement? = definition.parent
+        var bindingVector: PsiElement? = null
+        while (destructuring != null) {
+            val isPattern = destructuring.javaClass.simpleName.let { it.contains("ClVector") || it.contains("ClMap") }
+            val possibleBinding = destructuring.parent?.takeIf { it.javaClass.simpleName.contains("ClVector") }
+            val form = possibleBinding?.parent as? ClList
+            val head = form?.let(::getHead) as? ClEditorSymbol
+            if (isPattern && possibleBinding != null && head?.text?.let(::isLetLikeBindingHead) == true) {
+                bindingVector = possibleBinding
+                break
+            }
+            destructuring = destructuring.parent
         }
-        val destructuring = pattern ?: return null
-        val bindingVector = destructuring.parent?.takeIf { it.javaClass.simpleName.contains("ClVector") } ?: return null
-        val form = bindingVector.parent as? ClList ?: return null
-        val head = getHead(form) as? ClEditorSymbol ?: return null
-        if (!isLetLikeBindingHead(head.text)) return null
-        val pairs = bindingVector.children.filter {
+        val pattern = destructuring ?: return null
+        val binding = bindingVector ?: return null
+        val pairs = binding.children.filter {
             it !is PsiWhiteSpace && it !is PsiComment && it.text !in setOf("[", "]")
         }
-        val i = pairs.indexOf(destructuring)
+        val i = pairs.indexOf(pattern)
         return if (i >= 0) pairs.getOrNull(i + 1) else null
     }
 
-    private fun resolveCallbackParameter(
-        definition: PsiElement,
+    private fun threadedInputBefore(call: ClList, index: JsSymbolIndex, state: State): TypeResolution? {
+        val thread = call.parent as? ClList ?: return null
+        val children = meaningfulChildren(thread)
+        val head = (children.firstOrNull() as? ClEditorSymbol)?.text
+        if (head in setOf("->>", "some->>")) {
+            val callIndex = children.indexOfFirst { it === call }
+            if (callIndex < 2) return null
+            val current = resolve(children[1], index, state) ?: return null
+            return applySequenceSteps(current, children.subList(2, callIndex), index, state)
+        }
+        val comp = thread.takeIf { head == "comp" }
+        val owner = (comp?.parent as? ClList) ?: thread
+        val ownerChildren = meaningfulChildren(owner)
+        val ownerHead = (ownerChildren.firstOrNull() as? ClEditorSymbol)?.text
+        if (ownerHead !in setOf("into", "sequence", "eduction", "transduce")) return null
+        val source = ownerChildren.lastOrNull()?.let { resolve(it, index, state) } ?: return null
+        val current = CljsCoreTypeRules.sequenceView(source) ?: return null
+        if (comp == null) return current
+        val compChildren = meaningfulChildren(comp)
+        val callIndex = compChildren.indexOfFirst { it === call }
+        return applySequenceSteps(current, compChildren.subList(1, callIndex.coerceAtLeast(1)), index, state)
+    }
+
+    private fun applySequenceSteps(
+        initial: TypeResolution,
+        steps: List<PsiElement>,
         index: JsSymbolIndex,
         state: State,
     ): TypeResolution? {
-        val params = definition.parent?.takeIf { it.javaClass.simpleName.contains("ClVector") } ?: return null
-        val fn = params.parent as? ClList ?: return null
-        val fnChildren = meaningfulChildren(fn)
-        if ((fnChildren.firstOrNull() as? ClEditorSymbol)?.text !in setOf("fn", "fn*")) return null
-        val parameterIndex = params.children.filter {
-            it !is PsiWhiteSpace && it !is PsiComment && it.text !in setOf("[", "]", "&")
-        }.indexOf(definition)
-        if (parameterIndex < 0) return null
-        val call = fn.parent as? ClList ?: return null
-        val callChildren = meaningfulChildren(call)
-        val callHead = callChildren.firstOrNull() as? ClEditorSymbol ?: return null
-        val method = callHead.text.removePrefix(".")
-        if (!callHead.text.startsWith(".") || method !in setOf("then", "map", "filter", "forEach")) return null
-        val receiver = callChildren.getOrNull(1) ?: return null
-        val receiverType = resolve(receiver, index, state) ?: return null
-        val named = receiverType.ref.primaryNamed() ?: return null
-        val element = named.args.firstOrNull() ?: return null
-        return TypeResolution(element, receiverType.confident, InferenceProvenance.CALL_SIGNATURE)
+        var current = initial
+        for (step in steps) {
+            val stepHead = when (step) {
+                is ClEditorSymbol -> step.text
+                is ClList -> (meaningfulChildren(step).firstOrNull() as? ClEditorSymbol)?.text
+                else -> null
+            }
+            current = when (stepHead) {
+                in CljsCoreTypeRules.adapterHeads -> CljsCoreTypeRules.sequenceView(current) ?: return null
+                in CljsCoreTypeRules.preservingHeads -> current
+                "into" -> current
+                "partition", "partition-all" -> {
+                    val item = collectionElementType(current.ref) ?: return null
+                    TypeResolution(JsTypeRef.Named("Array", listOf(JsTypeRef.Named("Array", listOf(item)))),
+                        current.confident, InferenceProvenance.CALL_SIGNATURE)
+                }
+                "flatten" -> {
+                    var item = collectionElementType(current.ref) ?: return null
+                    while (true) item = collectionElementType(item) ?: break
+                    TypeResolution(JsTypeRef.Named("Array", listOf(item)), current.confident,
+                        InferenceProvenance.CALL_SIGNATURE)
+                }
+                in CljsCoreTypeRules.mappingHeads -> {
+                    val callback = (step as? ClList)?.let { meaningfulChildren(it).getOrNull(1) }
+                        ?: return null
+                    val input = collectionElementType(current.ref)?.let { TypeResolution(it, current.confident) }
+                    val callbackArguments = if (stepHead in setOf("map-indexed", "keep-indexed")) {
+                        listOf(TypeResolution(JsTypeRef.Named("number"), true)) + listOfNotNull(input)
+                    } else listOfNotNull(input)
+                    val result = callbackReturnType(callback, index, state, callbackArguments) ?: return null
+                    val element = when (stepHead) {
+                        "keep", "keep-indexed" -> JsTypeFlow.removeNullish(result.ref)
+                        "mapcat" -> collectionElementType(result.ref) ?: result.ref
+                        else -> result.ref
+                    }
+                    TypeResolution(JsTypeRef.Named("Array", listOf(element)), result.confident,
+                        InferenceProvenance.CALL_SIGNATURE)
+                }
+                else -> return null
+            }
+        }
+        return current
     }
 
-    private fun callbackReturnType(callback: ClList, index: JsSymbolIndex, state: State): TypeResolution? {
-        val children = meaningfulChildren(callback)
+    private fun callbackReturnType(
+        callback: PsiElement,
+        index: JsSymbolIndex,
+        state: State,
+        arguments: List<TypeResolution?> = emptyList(),
+    ): TypeResolution? {
+        if (callback is ClEditorSymbol) {
+            val definition = resolveDefinition(callback) ?: return null
+            return defnReturnType(definition, index, state, arguments)
+        }
+        val list = callback as? ClList ?: return null
+        val children = meaningfulChildren(list)
         val head = children.firstOrNull() as? ClEditorSymbol ?: return null
         if (head.text !in setOf("fn", "fn*")) return null
-        return children.lastOrNull()?.let { resolve(it, index, state) }
+        val params = children.firstOrNull { it.javaClass.simpleName.contains("ClVector") }
+        return if (params != null) withParameterBindings(params, arguments, state) {
+            children.lastOrNull()?.let { resolve(it, index, state) }
+        } else children.lastOrNull()?.let { resolve(it, index, state) }
     }
 
     private fun isLetLikeBindingHead(head: String): Boolean =
@@ -519,41 +677,32 @@ object JsResolveUtil {
         return children.getOrNull(1)
     }
 
-    private fun findTypeHint(element: PsiElement): String? {
-        // 1. Check for ^Type metadata on the element or its parent
-        // In Cursive, metadata often appears as a sibling with '^'
-        var prev = element.prevSibling
-        while (prev != null && (prev is PsiWhiteSpace || prev is PsiComment)) {
-            prev = prev.prevSibling
-        }
-
-        if (prev != null && prev.text.startsWith("^")) {
-            return prev.text.removePrefix("^")
-        }
-
-        // 2. Check if the element is inside a metadata form
-        // Cursive might wrap elements in a metadata-carrying PSI node
-        var current = element.parent
-        repeat(3) {
-            if (current == null) return@repeat
-            if (current!!.text.startsWith("^")) {
-                val hint = current!!.text.split(Regex("\\s+")).firstOrNull()?.removePrefix("^")
-                if (hint != null) return hint
-            }
-            current = current!!.parent
-        }
-
-        return null
-    }
-
-    private fun sanitizeType(type: String): String? {
-        val s = type.removePrefix("js/").removePrefix("cljs.core/")
-        return if (s == "js" || s == "any" || s == "Object" || s == "object") null else s
-    }
-
     private val DEFN_HEADS = setOf("defn", "defn-")
-
     /** Forms whose value is the last body expression. Binding forms are excluded — their body
      *  tail is still the last child, so they are safe to include where listed. */
-    private val BODY_TAIL_HEADS = setOf("do", "let", "let*", "when", "when-let", "when-some", "if-let", "if-some", "binding")
+    private val BODY_TAIL_HEADS = setOf(
+        "do", "let", "let*", "when", "when-not", "when-let", "when-some", "if-let", "if-some", "binding",
+    )
+}
+
+internal fun collectionElementType(ref: JsTypeRef): JsTypeRef? = when (ref) {
+    is JsTypeRef.Named -> when (ref.name) {
+        "Array", "ReadonlyArray", "Iterable", "IterableIterator", "Iterator", "Generator", "AsyncGenerator",
+        "AsyncIterable", "ArrayLike", "IArrayLike", "Set", "ReadonlySet", "WeakSet", "NodeListOf",
+        "HTMLCollectionOf" -> ref.args.firstOrNull()
+        "Map", "ReadonlyMap", "WeakMap" -> ref.args.takeIf { it.size >= 2 }?.let { JsTypeRef.Named("Tuple", it.take(2)) }
+        "Int8Array", "Uint8Array", "Uint8ClampedArray", "Int16Array", "Uint16Array", "Int32Array",
+        "Uint32Array", "Float32Array", "Float64Array", "BigInt64Array", "BigUint64Array" -> JsTypeRef.Named("number")
+        else -> null
+    }
+    is JsTypeRef.Union -> {
+        val elements = ref.members.mapNotNull(::collectionElementType).distinct()
+        when (elements.size) {
+            0 -> null
+            1 -> elements.first()
+            else -> JsTypeRef.Union(elements)
+        }
+    }
+    is JsTypeRef.Record -> null
+    JsTypeRef.Unknown -> null
 }

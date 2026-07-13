@@ -412,10 +412,27 @@ class NpmPackageResolver(
 
             Regex("""///\s*<reference\s+path="([^"]+)"""").findAll(content)
                 .map { it.groupValues[1] }
-                .filter { it.endsWith(".d.ts") && !it.startsWith("..") }
-                .forEach { queue.add(it) }
+                .mapNotNull { resolveRelativeDeclaration(baseDir, name, it) }
+                .forEach(queue::add)
+            Regex("""(?:from\s+|import\s*\(\s*|require\s*\(\s*|import\s*)["'](\.[^"']+)["']""").findAll(content)
+                .map { it.groupValues[1] }
+                .mapNotNull { resolveRelativeDeclaration(baseDir, name, it) }
+                .forEach(queue::add)
         }
 
         return collected
+    }
+
+    private fun resolveRelativeDeclaration(baseDir: File, sourceName: String, request: String): String? {
+        val sourceDir = File(sourceName).parent.orEmpty()
+        val requested = File(sourceDir, request.substringBefore('?')).normalize().path
+        val stem = requested.removeSuffix(".js").removeSuffix(".mjs").removeSuffix(".cjs")
+        val candidates = buildList {
+            listOf(".d.ts", ".d.mts", ".d.cts").forEach { add(stem + it) }
+            listOf(".d.ts", ".d.mts", ".d.cts").forEach { add("$requested$it") }
+            listOf(".d.ts", ".d.mts", ".d.cts").forEach { add("$requested/index$it") }
+            add(requested)
+        }
+        return candidates.firstOrNull { File(baseDir, it).isFile }
     }
 }
