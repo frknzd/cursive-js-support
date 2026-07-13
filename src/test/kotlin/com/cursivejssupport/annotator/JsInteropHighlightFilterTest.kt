@@ -1,5 +1,6 @@
 package com.cursivejssupport.annotator
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -63,5 +64,12 @@ class JsInteropHighlightFilterTest {
     @Test
     fun startAtBeginningIsNotRecognized() {
         assertFalse(JsInteropHighlightFilter.looksLikeJsTrailingMemberInSequence("createRange", 0))
+    }
+
+    @Test
+    fun memberHighlightRangeUsesFullEnclosingInteropSymbol() {
+        assertEquals(".-added", JsInteropHighlightFilter.normalizedInteropText("added", ".-added"))
+        assertEquals(".map", JsInteropHighlightFilter.normalizedInteropText("map", ".map"))
+        assertEquals("ordinary", JsInteropHighlightFilter.normalizedInteropText("ordinary", "ordinary"))
     }
 }

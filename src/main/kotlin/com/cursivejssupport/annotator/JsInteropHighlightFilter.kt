@@ -46,7 +46,9 @@ class JsInteropHighlightFilter : HighlightInfoFilter {
         }
 
         val rawText = document.getText(TextRange(start, end))
-        val text = if (rawText.endsWith(".") && rawText.length > 1 && !rawText.startsWith(".")) rawText.removeSuffix(".") else rawText
+        val elementAtOffset = file.findElementAt(start)
+        val enclosingSymbol = PsiTreeUtil.getParentOfType(elementAtOffset, ClEditorSymbol::class.java, false)
+        val text = normalizedInteropText(rawText, enclosingSymbol?.text)
 
         val index = JsSymbolIndex.getInstance(file.project)
         val aliases = NsAliasResolver.resolveAliases(file)
@@ -102,8 +104,7 @@ class JsInteropHighlightFilter : HighlightInfoFilter {
 
         // 3c. Enclosing symbol: dotted `js/` / `namespace == js` chains and bare npm default aliases
         if (index.isLoaded) {
-            val elementAtOffset = file.findElementAt(start)
-            val enclosing = PsiTreeUtil.getParentOfType(elementAtOffset, ClEditorSymbol::class.java, false)
+            val enclosing = enclosingSymbol
             if (enclosing != null) {
                 val full = enclosing.text?.trim().orEmpty()
                 if (full.isNotEmpty() && aliases.containsKey(full)) {
@@ -152,13 +153,10 @@ class JsInteropHighlightFilter : HighlightInfoFilter {
                         val receiver = children[1]
 
                         // Use your utility to infer the type!
-                        val receiverType = JsResolveUtil.resolveType(receiver, index)
-
-                        if (receiverType != null) {
-                            val iface = index.resolveInterface(receiverType)
-                            if (iface != null && iface.members.containsKey(memberName)) {
-                                return false // Suppress: Known member on a known inferred type!
-                            }
+                        val receiverType = JsResolveUtil.resolveTypeRef(receiver, index)
+                        if (receiverType?.effectiveSemanticMembers?.any { it.name == memberName } == true ||
+                            receiverType != null && index.resolveMembersOf(receiverType.ref).containsKey(memberName)) {
+                            return false
                         }
                     }
                 }
@@ -168,10 +166,10 @@ class JsInteropHighlightFilter : HighlightInfoFilter {
             // If we couldn't infer the type (very common in CLJS without type hints),
             // we check if this member exists on ANY known interface in your index.
             // If it exists somewhere in the JS ecosystem, we suppress the error to avoid false positives.
-            val existsAnywhere = index.hasMemberName(memberName)
-            if (existsAnywhere) {
-                return false // Suppress: We don't know the type, but the method exists in JS.
-            }
+            // Dot interop is valid ClojureScript even when its receiver is intentionally dynamic.
+            // Our confidence-aware inspection reports genuinely unknown members; Cursive's
+            // unresolved-symbol annotator has no JS type information and must not duplicate it.
+            return false
         }
 
         // If we get here, it's not in your index at all. Let Cursive highlight it as a typo!
@@ -281,6 +279,14 @@ class JsInteropHighlightFilter : HighlightInfoFilter {
             }
             return seq[i] == 's' && seq[i - 1] == 'j' &&
                 (i - 1 == 0 || !seq[i - 2].isLetterOrDigit())
+        }
+
+        internal fun normalizedInteropText(rawText: String, enclosingSymbolText: String?): String {
+            val raw = if (rawText.endsWith(".") && rawText.length > 1 && !rawText.startsWith(".")) {
+                rawText.removeSuffix(".")
+            } else rawText
+            val enclosing = enclosingSymbolText?.trim().orEmpty()
+            return enclosing.takeIf { it.startsWith(".") || it.startsWith("js/") } ?: raw
         }
     }
 }
