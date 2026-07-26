@@ -4,6 +4,21 @@
 
 ## [Unreleased]
 
+## [1.0.2]
+
+### Added
+- IntelliJ IDEA 2026.2 (build 262) support via a target-platform matrix. Each supported IDE line
+  ships as its own artifact against its version-locked Cursive dependency (Cursive `2026.2-262` for
+  262, `2026.1-261` for 261); build a line with `./gradlew build -PplatformVersion=2026.1|2026.2`.
+
+### Changed
+- Bumped the Kotlin build toolchain to 2.4.10 to read IntelliJ 2026.2's (Kotlin 2.4) module metadata.
+
+### Fixed
+- Replaced the removed `com.intellij.modules.javascript` module dependency with a dependency on the
+  `JavaScript` plugin, fixing an "requires com.intellij.modules.javascript to be installed" error on
+  install under 2026.2.
+
 ## [1.0.0]
 
 - Added condition-aware multi-entry npm resolution that merges `import`, `require`, `browser`,

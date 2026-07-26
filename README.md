@@ -22,7 +22,7 @@ tool window to inspect detected builds and indexing health.
 
 ## Requirements
 
-- IntelliJ IDEA 2026.1 (build 261) or compatible
+- IntelliJ IDEA 2026.1 (build 261) or 2026.2 (build 262) — shipped as a separate artifact per line
 - The Cursive plugin installed in the IDE
 - IntelliJ's JavaScript and JavaScript Debugger plugins (IntelliJ IDEA Ultimate)
 - JDK 21 (for building)

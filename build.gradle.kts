@@ -7,14 +7,45 @@ plugins {
     id("dev.detekt")
 }
 
+// ---------------------------------------------------------------------------
+// Target-platform matrix.
+//
+// Cursive is strictly version-locked to a single IDE build (Cursive 2026.1-261
+// runs only on IDE 261, 2026.2-262 only on 262), so each supported IDE line is
+// shipped as its own artifact with a matching Cursive dependency and a
+// non-overlapping since/until range. Select a line with:
+//
+//   ./gradlew build                          # default: 2026.2
+//   ./gradlew build -PplatformVersion=2026.1 # older line
+//
+// The requested IDE is reused from the local install when it matches (fast dev
+// loop); otherwise Gradle downloads it. Force a path with -PlocalIdePath=...
+// ---------------------------------------------------------------------------
+data class PlatformSpec(
+    val ideVersion: String,
+    val cursiveVersion: String,
+    val sinceBuild: String,
+    val untilBuild: String,
+)
+
+val platformSpecs = mapOf(
+    "2026.1" to PlatformSpec("2026.1", "2026.1-261", "261", "261.*"),
+    "2026.2" to PlatformSpec("2026.2", "2026.2-262", "262", "262.*"),
+)
+
+val platformVersion = providers.gradleProperty("platformVersion").getOrElse("2026.2")
+val platform = platformSpecs[platformVersion]
+    ?: error("Unsupported platformVersion '$platformVersion'. Choose one of ${platformSpecs.keys}.")
+
+val localIdePath: String? = providers.gradleProperty("localIdePath").orNull
+    ?: "/Applications/IntelliJ IDEA.app".takeIf { platformVersion == "2026.2" }
+
+val pluginBaseVersion = "1.0.2"
+
 intellijPlatform {
     buildSearchableOptions = false
-    // Pure-Kotlin plugin with no UI forms / Java @NotNull assertions — instrumentation adds
-    // nothing and fails against the local IDE install (no Java Compiler dependency for it).
     instrumentCode = false
     pluginVerification {
-        // Cursive and JavaScriptDebugger are version-locked to the target IDE build.
-        // Verifying recommended future IDEs produces dependency failures, not compatibility signal.
         ides {
             current()
         }
@@ -22,7 +53,7 @@ intellijPlatform {
 }
 
 group = "com.cursivejssupport"
-version = "1.0.1"
+version = "$pluginBaseVersion-${platform.sinceBuild}"
 
 repositories {
     mavenCentral()
@@ -37,9 +68,13 @@ dependencies {
     implementation(libs.edn.java)
 
     intellijPlatform {
-        local("/Applications/IntelliJ IDEA.app")
+        if (localIdePath != null) {
+            local(localIdePath)
+        } else {
+            create("IU", platform.ideVersion)
+        }
         testFramework(TestFrameworkType.Platform)
-        plugin("com.cursiveclojure.cursive", "2026.1-261")
+        plugin("com.cursiveclojure.cursive", platform.cursiveVersion)
         bundledPlugin("JavaScript")
         bundledPlugin("JavaScriptDebugger")
         bundledModule("intellij.platform.scriptDebugger.ui")
@@ -67,11 +102,8 @@ tasks {
     }
 
     patchPluginXml {
-        sinceBuild.set("261")
-        // Cursive is mandatory, so do not advertise IDE builds unsupported by the
-        // stable Cursive dependency. Publish a separate 262 build once Cursive 262
-        // is available on the same Marketplace channel.
-        untilBuild.set("261.*")
+        sinceBuild.set(platform.sinceBuild)
+        untilBuild.set(platform.untilBuild)
     }
 }
 
