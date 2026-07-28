@@ -40,7 +40,7 @@ val platform = platformSpecs[platformVersion]
 val localIdePath: String? = providers.gradleProperty("localIdePath").orNull
     ?: "/Applications/IntelliJ IDEA.app".takeIf { platformVersion == "2026.2" }
 
-val pluginBaseVersion = "1.0.2"
+val pluginBaseVersion = "1.1.0"
 
 intellijPlatform {
     buildSearchableOptions = false

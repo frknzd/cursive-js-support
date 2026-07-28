@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+## [1.1.0]
+
+### Changed
+- Updated the bundled TypeScript standard-library declarations to TypeScript 7.0.2, including the
+  latest `lib.esnext.*` surface for ECMAScript 2026, and regenerated the browser symbol index.
+- Regenerated the Google Closure symbol index and bundled sources after confirming
+  `google-closure-library` `20230802.0.0` remains the latest published release.
+
 ## [1.0.2]
 
 ### Added

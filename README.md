@@ -1,6 +1,6 @@
 # Cursive JS Support
 
-A companion plugin for [Cursive](https://cursive-ide.com/) that brings JavaScript interop awareness to ClojureScript files. It provides completion, documentation, and go-to-declaration for `js/`, `(.method receiver)`, `(.-prop receiver)`, and shadow-cljs `(:require ["pkg" :as alias :refer […]])` forms. Completion is driven by a bundled snapshot of TypeScript's `lib.dom.d.ts` plus any `.d.ts` files found in your project's `node_modules` (including shadow-cljs `:npm-deps` packages and workspace-style `packages/*`).
+A companion plugin for [Cursive](https://cursive-ide.com/) that brings JavaScript interop awareness to ClojureScript files. It provides completion, documentation, and go-to-declaration for `js/`, `(.method receiver)`, `(.-prop receiver)`, and shadow-cljs `(:require ["pkg" :as alias :refer […]])` forms. Completion is driven by the TypeScript 7.0.2 DOM and standard-library declarations (including the current ECMAScript 2026/`esnext` surface) plus any `.d.ts` files found in your project's `node_modules` (including shadow-cljs `:npm-deps` packages and workspace-style `packages/*`).
 
 Version 1.0 also adds project-scoped indexing, shadow-cljs/`cljs.main`/Figwheel build discovery,
 parameter info, confidence-aware inspections and quick fixes, modern npm subpath resolution,
@@ -34,6 +34,15 @@ tool window to inspect detected builds and indexing health.
 ```
 
 The artifact lands in `build/libs/` (the composed jar bundles all plugin runtime dependencies — that's the file you install).
+
+Build an upload-ready JetBrains Marketplace ZIP for a specific IDE line:
+
+```
+./gradlew buildPlugin -PplatformVersion=2026.1
+./gradlew buildPlugin -PplatformVersion=2026.2
+```
+
+The version-specific ZIPs land in `build/distributions/`.
 
 ## Install
 
