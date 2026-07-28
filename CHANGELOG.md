@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+## [1.2.1]
+
+### Changed
+- Published the expanded Marketplace description covering the plugin's current completion,
+  navigation, inspection, indexing, build-discovery, and source-map debugging features.
+
 ## [1.1.0]
 
 ### Changed
