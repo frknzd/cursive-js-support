@@ -4,9 +4,22 @@
     <vendor url="https://github.com/frknzdmr">Furkan Ozdemir</vendor>
 
     <description><![CDATA[
-        Adds JavaScript/browser API awareness to ClojureScript editing in Cursive.
-        Removes false-positive squiggly lines on <code>js/</code> globals and browser
-        interop forms by loading TypeScript's <code>lib.dom.d.ts</code> declarations.
+        <p>
+            First-class JavaScript interop tooling for ClojureScript development in Cursive.
+            The plugin understands <code>js/</code> globals, property and method interop,
+            constructors, threaded forms, npm modules, and Google Closure namespaces using
+            bundled DOM and ECMAScript declarations plus the type definitions in your project.
+        </p>
+        <ul>
+            <li>Type-aware completion, parameter information, quick documentation, and navigation</li>
+            <li>Inspections and quick fixes for unknown globals, members, exports, arity, and deprecations</li>
+            <li>npm package and workspace indexing with modern exports and subpath resolution</li>
+            <li>Build discovery for shadow-cljs, cljs.main, and Figwheel Main</li>
+            <li>Browser and Node.js debugging with ClojureScript source-map support</li>
+        </ul>
+        <p>
+            Requires Cursive and IntelliJ IDEA Ultimate's JavaScript and JavaScript Debugger plugins.
+        </p>
     ]]></description>
 
     <depends>com.intellij.modules.platform</depends>

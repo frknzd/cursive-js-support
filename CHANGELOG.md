@@ -11,6 +11,8 @@
   latest `lib.esnext.*` surface for ECMAScript 2026, and regenerated the browser symbol index.
 - Regenerated the Google Closure symbol index and bundled sources after confirming
   `google-closure-library` `20230802.0.0` remains the latest published release.
+- Rewrote the Marketplace description to cover completion, navigation, inspections, npm and Closure
+  indexing, build discovery, and source-map debugging.
 
 ## [1.0.2]
 
