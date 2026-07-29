@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+## [1.3.0]
+
+### Added
+- Recognize `js/globalThis`: completion, hover, goto-declaration, chain type inference
+  (`js/globalThis.document.body`), and inspection suppression now treat it like `js/window`.
+  TypeScript declares no `globalThis` variable (it is a keyword), so the browser index gains it
+  synthetically, mirroring the `window` declaration it is typed against.
+
 ## [1.2.1]
 
 ### Changed

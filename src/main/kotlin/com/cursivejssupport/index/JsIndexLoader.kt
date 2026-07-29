@@ -3,6 +3,7 @@ package com.cursivejssupport.index
 import com.cursivejssupport.npm.NpmPackageResolver
 import com.cursivejssupport.parser.DtsParser
 import com.cursivejssupport.parser.ParsedSymbols
+import com.cursivejssupport.parser.withSyntheticGlobalThis
 import com.cursivejssupport.settings.JsSupportSettings
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.fasterxml.jackson.module.kotlin.readValue
@@ -26,7 +27,7 @@ object JsIndexLoader {
 
         GZIPInputStream(stream).use { gz ->
             val symbols = mapper.readValue<ParsedSymbols>(gz)
-            index.load(symbols)
+            index.load(symbols.withSyntheticGlobalThis())
         }
     }
 
