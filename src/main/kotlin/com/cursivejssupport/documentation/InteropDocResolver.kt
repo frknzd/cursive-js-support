@@ -141,12 +141,17 @@ object InteropDocResolver {
         }
     }
 
-    /** `(Foo. …)` — resolve the `new` overloads on the class's `TYPE$Foo$Static` companion. */
+    /**
+     * `(Foo. …)` — resolve the `new` overloads on whichever companion declares them: the class's
+     * `TYPE$Foo$Static`, the interface itself, or the type the global is declared with
+     * (`declare var Error: ErrorConstructor`, how core ECMAScript spells it).
+     */
     private fun resolveConstructor(typeName: String, index: JsSymbolIndex): InteropDocSubject? {
         val cleanName = typeName.removePrefix("js/")
         val companion = "$TYPE_COMPANION_PREFIX$cleanName\$Static"
         val newOverloads = index.resolveMember(companion, "new")?.overloads
             ?: index.resolveMember(cleanName, "new")?.overloads
+            ?: index.globalConstructSignatures(cleanName).ifEmpty { null }
         val classDoc = index.resolveGlobalInfo(cleanName)?.doc
             ?: index.resolveInterface(cleanName)?.members?.get("constructor")?.firstOrNull()?.doc
         if (newOverloads.isNullOrEmpty() && index.resolveInterface(cleanName) == null) return null

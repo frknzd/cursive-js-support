@@ -1,0 +1,89 @@
+name: Release
+
+# Cursive is version-locked to a single IDE build, so every release is two independent artifacts
+# (1.3.1-261 and 1.3.1-262) uploaded to the same Marketplace plugin ID. Push a `v<pluginVersion>`
+# tag to publish both; run the workflow manually for a dry run that stops short of uploading.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Upload to JetBrains Marketplace (off = build and verify only)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: ${{ github.event_name == 'push' && 'Publish' || 'Check' }} ${{ matrix.platform }}
+    runs-on: ubuntu-latest
+    # Each IDE line stands alone: a failure on one must not cancel the other's upload.
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: ['2026.1', '2026.2']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Check the tag matches pluginVersion
+        if: github.ref_type == 'tag'
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          declared="$(sed -n 's/^pluginVersion=//p' gradle.properties)"
+          if [ "$tag" != "$declared" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match pluginVersion=$declared in gradle.properties"
+            exit 1
+          fi
+
+      # Marketplace "What's New" is rendered from this section, and an empty one ships a release
+      # with no notes — cheaper to catch here than after the upload is approved.
+      - name: Check the changelog has notes for this version
+        if: github.ref_type == 'tag'
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          notes="$(./gradlew getChangelog --quiet --no-header --no-summary --no-empty-sections \
+            --project-version="$version")" || notes=""
+          if [ -z "$(printf '%s' "$notes" | tr -d '[:space:]')" ]; then
+            echo "::error::CHANGELOG.md has no entries under [$version]"
+            exit 1
+          fi
+          printf '%s\n' "$notes"
+
+      - name: Test
+        run: ./gradlew test -PplatformVersion=${{ matrix.platform }}
+
+      - name: Verify plugin
+        run: ./gradlew verifyPlugin -PplatformVersion=${{ matrix.platform }}
+
+      - name: Publish to JetBrains Marketplace
+        if: github.event_name == 'push' || inputs.publish
+        env:
+          PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
+          CERTIFICATE_CHAIN: ${{ secrets.CERTIFICATE_CHAIN }}
+          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+          PRIVATE_KEY_PASSWORD: ${{ secrets.PRIVATE_KEY_PASSWORD }}
+        run: ./gradlew publishPlugin -PplatformVersion=${{ matrix.platform }}
+
+      # The signed ZIP is what reviewers see; keep it around for reproducing a rejected upload.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: plugin-${{ matrix.platform }}
+          path: build/distributions/*.zip
+          if-no-files-found: warn

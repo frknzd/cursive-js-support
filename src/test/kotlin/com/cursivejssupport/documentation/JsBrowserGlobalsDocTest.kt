@@ -959,8 +959,13 @@ class JsBrowserGlobalsDocTest {
         assertTrue((jsGlobal("TextEncoder") as InteropDocSubject.JsGlobal).isConstructor)
     }
 
-    @Test fun `js-NodeFilter isConstructor true`() {
-        assertTrue((jsGlobal("NodeFilter") as InteropDocSubject.JsGlobal).isConstructor)
+    // Flag bag, not a class — its companion declares no `new` signature.
+    @Test fun `js-NodeFilter isConstructor false`() {
+        assertFalse((jsGlobal("NodeFilter") as InteropDocSubject.JsGlobal).isConstructor)
+    }
+
+    @Test fun `js-Symbol isConstructor false`() {
+        assertFalse((jsGlobal("Symbol") as InteropDocSubject.JsGlobal).isConstructor)
     }
 
     @Test fun `js-document isConstructor false`() {
@@ -1328,6 +1333,14 @@ class JsBrowserGlobalsDocTest {
                     "parse" to fn("any", JsParam("text", "string")),
                     "stringify" to fn("string", JsParam("value", "any")),
                 ),
+                // Callable but not newable — `new Symbol()` / `new BigInt()` throw at runtime, and
+                // lib.es2015/es2020 model that by giving the companion a call but no `new` signature.
+                "SymbolConstructor" to iface(
+                    "\$call" to fn("symbol", JsParam("description", "string")),
+                ),
+                "BigIntConstructor" to iface(
+                    "\$call" to fn("bigint", JsParam("value", "any")),
+                ),
                 "Reflect" to iface(
                     "apply" to fn("any"), "construct" to fn("any"),
                     "defineProperty" to fn("boolean"), "deleteProperty" to fn("boolean"),
@@ -1359,10 +1372,35 @@ class JsBrowserGlobalsDocTest {
 
             val fnMap = buildFunctionsMap()
 
-            index.load(ParsedSymbols(interfaces = ifaceMap, variables = varMap, functions = fnMap))
+            index.load(
+                ParsedSymbols(
+                    interfaces = ifaceMap + constructorCompanions(varMap, ifaceMap.keys),
+                    variables = varMap,
+                    functions = fnMap,
+                ),
+            )
             index.setLoaded(true)
             return index
         }
+
+        /**
+         * Every constructable global is declared through a companion type that carries the `new`
+         * signature — an anonymous object literal the extractor names `TYPE$X` for the DOM libs,
+         * a named `XConstructor` interface for core ECMAScript. Synthesize those companions so
+         * the fixture has the same shape as the bundled index; companions the fixture spells out
+         * itself ([declared]) are left alone, which is how the genuinely non-constructable
+         * `TYPE$NodeFilter` / `SymbolConstructor` stay free of a `new` member.
+         */
+        private fun constructorCompanions(
+            variables: Map<String, JsVariableInfo>,
+            declared: Set<String>,
+        ): Map<String, JsInterface> = variables.values
+            .map { it.type }
+            .filter { (it.startsWith("TYPE\$") || it.endsWith("Constructor")) && it !in declared }
+            .distinct()
+            .associateWith { type ->
+                iface("new" to fn(type.removePrefix("TYPE\$").removeSuffix("Constructor")))
+            }
 
         private fun buildVariablesMap(): Map<String, JsVariableInfo> {
             val v: (String) -> JsVariableInfo = { type -> JsVariableInfo(type = type) }
@@ -1371,33 +1409,34 @@ class JsBrowserGlobalsDocTest {
                 "undefined" to JsVariableInfo(type = "undefined"),
                 "Infinity" to v("number"), "NaN" to v("number"),
                 "globalThis" to v("Window"),
-                // ECMAScript constructor globals (TYPE$ = typeof companion = newable class)
-                "Object" to v("TYPE\$Object"), "Function" to v("TYPE\$Function"),
-                "Boolean" to v("TYPE\$Boolean"), "Symbol" to v("TYPE\$Symbol"), "BigInt" to v("TYPE\$BigInt"),
-                "Number" to v("TYPE\$Number"), "Math" to v("Math"),
-                "Date" to v("TYPE\$Date"), "String" to v("TYPE\$String"), "RegExp" to v("TYPE\$RegExp"),
-                "Array" to v("TYPE\$Array"),
-                "Map" to v("TYPE\$Map"), "Set" to v("TYPE\$Set"),
-                "WeakMap" to v("TYPE\$WeakMap"), "WeakSet" to v("TYPE\$WeakSet"),
-                "WeakRef" to v("TYPE\$WeakRef"), "FinalizationRegistry" to v("TYPE\$FinalizationRegistry"),
-                "Promise" to v("TYPE\$Promise"), "Proxy" to v("TYPE\$Proxy"),
+                // ECMAScript constructor globals — core ES declares these as `declare var X:
+                // XConstructor`, i.e. a *named* companion interface rather than a `TYPE$X` literal
+                "Object" to v("ObjectConstructor"), "Function" to v("FunctionConstructor"),
+                "Boolean" to v("BooleanConstructor"), "Symbol" to v("SymbolConstructor"), "BigInt" to v("BigIntConstructor"),
+                "Number" to v("NumberConstructor"), "Math" to v("Math"),
+                "Date" to v("DateConstructor"), "String" to v("StringConstructor"), "RegExp" to v("RegExpConstructor"),
+                "Array" to v("ArrayConstructor"),
+                "Map" to v("MapConstructor"), "Set" to v("SetConstructor"),
+                "WeakMap" to v("WeakMapConstructor"), "WeakSet" to v("WeakSetConstructor"),
+                "WeakRef" to v("WeakRefConstructor"), "FinalizationRegistry" to v("FinalizationRegistryConstructor"),
+                "Promise" to v("PromiseConstructor"), "Proxy" to v("ProxyConstructor"),
                 "Reflect" to v("Reflect"), "JSON" to v("JSON"), "Atomics" to v("Atomics"),
                 "Intl" to v("Intl"),
                 // Structured data constructors
-                "ArrayBuffer" to v("TYPE\$ArrayBuffer"), "SharedArrayBuffer" to v("TYPE\$SharedArrayBuffer"),
-                "DataView" to v("TYPE\$DataView"),
+                "ArrayBuffer" to v("ArrayBufferConstructor"), "SharedArrayBuffer" to v("SharedArrayBufferConstructor"),
+                "DataView" to v("DataViewConstructor"),
                 // Typed array constructors
-                "Int8Array" to v("TYPE\$Int8Array"), "Uint8Array" to v("TYPE\$Uint8Array"),
-                "Uint8ClampedArray" to v("TYPE\$Uint8ClampedArray"), "Int16Array" to v("TYPE\$Int16Array"),
-                "Uint16Array" to v("TYPE\$Uint16Array"), "Int32Array" to v("TYPE\$Int32Array"),
-                "Uint32Array" to v("TYPE\$Uint32Array"), "Float32Array" to v("TYPE\$Float32Array"),
-                "Float64Array" to v("TYPE\$Float64Array"), "BigInt64Array" to v("TYPE\$BigInt64Array"),
-                "BigUint64Array" to v("TYPE\$BigUint64Array"),
+                "Int8Array" to v("Int8ArrayConstructor"), "Uint8Array" to v("Uint8ArrayConstructor"),
+                "Uint8ClampedArray" to v("Uint8ClampedArrayConstructor"), "Int16Array" to v("Int16ArrayConstructor"),
+                "Uint16Array" to v("Uint16ArrayConstructor"), "Int32Array" to v("Int32ArrayConstructor"),
+                "Uint32Array" to v("Uint32ArrayConstructor"), "Float32Array" to v("Float32ArrayConstructor"),
+                "Float64Array" to v("Float64ArrayConstructor"), "BigInt64Array" to v("BigInt64ArrayConstructor"),
+                "BigUint64Array" to v("BigUint64ArrayConstructor"),
                 // Error constructors
-                "Error" to v("TYPE\$Error"), "AggregateError" to v("TYPE\$AggregateError"),
-                "EvalError" to v("TYPE\$EvalError"), "RangeError" to v("TYPE\$RangeError"),
-                "ReferenceError" to v("TYPE\$ReferenceError"), "SyntaxError" to v("TYPE\$SyntaxError"),
-                "TypeError" to v("TYPE\$TypeError"), "URIError" to v("TYPE\$URIError"),
+                "Error" to v("ErrorConstructor"), "AggregateError" to v("AggregateErrorConstructor"),
+                "EvalError" to v("EvalErrorConstructor"), "RangeError" to v("RangeErrorConstructor"),
+                "ReferenceError" to v("ReferenceErrorConstructor"), "SyntaxError" to v("SyntaxErrorConstructor"),
+                "TypeError" to v("TypeErrorConstructor"), "URIError" to v("URIErrorConstructor"),
                 // Window / frame
                 "window" to v("Window"), "self" to v("Window"),
                 "top" to v("Window"), "parent" to v("Window"),

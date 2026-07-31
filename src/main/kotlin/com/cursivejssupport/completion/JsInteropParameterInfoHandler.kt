@@ -80,7 +80,12 @@ class JsInteropParameterInfoHandler : ParameterInfoHandler<PsiElement, JsMember>
             if (semantic.isNotEmpty()) return semantic
             return index.resolveMembersOf(type.ref)[text.removePrefix(".").removePrefix("-")]?.overloads.orEmpty()
         }
-        if (text.startsWith("js/")) return index.resolveFunctions(text.removePrefix("js/")).orEmpty()
+        if (text.startsWith("js/")) {
+            val name = text.removePrefix("js/")
+            // `(js/Error. …)` — the `new` overloads live on the global's companion type.
+            if (name.endsWith(".")) return index.globalConstructSignatures(name.removeSuffix("."))
+            return index.resolveFunctions(name).orEmpty()
+        }
         val semantics = list.project.service<InteropSemanticService>()
         val binding = CljsPsiTypeRules.npmBinding(list.containingFile, text)
         if (binding != null && binding.kind in setOf(NpmBindingKind.REFER, NpmBindingKind.DEFAULT)) {

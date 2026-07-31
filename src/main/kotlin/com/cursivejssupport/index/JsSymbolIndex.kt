@@ -407,8 +407,19 @@ class JsSymbolIndex {
     fun isKnownGlobal(name: String): Boolean = globals.containsKey(name) || functions.containsKey(name)
     fun resolveGlobalInfo(name: String): JsVariableInfo? = globals[name]
     fun resolveFunctions(name: String): List<JsMember>? = functions[name]
-    fun isConstructorGlobal(name: String): Boolean =
-        globals[name]?.type?.startsWith("TYPE\$") == true
+    /**
+     * `new` overloads declared by a global's companion type. Core ECMAScript spells those
+     * companions out as named interfaces (`declare var Error: ErrorConstructor`), while the DOM
+     * libs use anonymous object literals the extractor names `TYPE$X` — both reach the same
+     * `new` members through the type graph, so the shape of the declaration doesn't matter.
+     */
+    fun globalConstructSignatures(name: String): List<JsMember> {
+        val declared = globals[name]?.type ?: return emptyList()
+        return resolveConstructSignatures(JsTypeRef.parse(declared))
+            .ifEmpty { resolveConstructSignatures(JsTypeRef.parse(canonicalType(declared))) }
+    }
+
+    fun isConstructorGlobal(name: String): Boolean = globalConstructSignatures(name).isNotEmpty()
     fun isKnownNpmPackage(packageName: String): Boolean = npmExports.containsKey(packageName)
     fun isKnownNpmExport(packageName: String, symbolName: String): Boolean = npmExports[packageName]?.containsKey(symbolName) == true
     fun resolveGlobalType(name: String): String? = globals[name]?.type

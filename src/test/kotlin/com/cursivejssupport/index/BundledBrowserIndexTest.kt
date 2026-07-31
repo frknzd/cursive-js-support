@@ -65,4 +65,40 @@ class BundledBrowserIndexTest {
         val doc = index.resolveMember("Document", "charset")?.first?.doc.orEmpty()
         assertTrue("charset doc should carry @deprecated: $doc", doc.contains("@deprecated"))
     }
+
+    /**
+     * Core ECMAScript constructors are declared as `declare var Error: ErrorConstructor` — a named
+     * companion interface, not the `TYPE$X` literal the DOM libs use. Recognizing only the latter
+     * made `(js/Error. "boom")` report "'Error' is not constructable" against the real index while
+     * the hand-built fixtures stayed green.
+     */
+    @Test fun `named companion constructors are constructable`() {
+        listOf(
+            "Error", "TypeError", "RangeError", "SyntaxError", "AggregateError",
+            "Date", "Map", "Set", "WeakMap", "Promise", "Proxy", "Array", "Object",
+            "RegExp", "ArrayBuffer", "DataView", "Uint8Array", "FinalizationRegistry",
+        ).forEach { assertTrue("$it should be constructable", index.isConstructorGlobal(it)) }
+    }
+
+    @Test fun `TYPE-dollar companion constructors stay constructable`() {
+        listOf("Blob", "URL", "Worker", "Event", "XMLHttpRequest", "TextEncoder", "AbortController")
+            .forEach { assertTrue("$it should be constructable", index.isConstructorGlobal(it)) }
+    }
+
+    @Test fun `companions without a new signature are not constructable`() {
+        // Flag bags and singletons: `(js/NodeFilter.)` / `(js/Math.)` are not constructor calls,
+        // and `new Symbol()` / `new BigInt()` throw at runtime.
+        listOf("NodeFilter", "Iterator", "Math", "JSON", "Reflect", "Symbol", "BigInt", "document", "window")
+            .forEach { assertTrue("$it should not be constructable", !index.isConstructorGlobal(it)) }
+    }
+
+    @Test fun `construct signatures come from the named companion`() {
+        val overloads = index.globalConstructSignatures("Error")
+        assertTrue("Error should declare new overloads", overloads.isNotEmpty())
+        assertTrue("Error's new should return Error", overloads.all { it.returns == "Error" })
+        assertTrue(
+            "Error's new should accept a message",
+            overloads.any { it.params.firstOrNull()?.type == "string" },
+        )
+    }
 }

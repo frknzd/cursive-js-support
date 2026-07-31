@@ -4,6 +4,19 @@
 
 ## [Unreleased]
 
+## [1.3.1]
+
+### Fixed
+- Constructability is now decided by the global's companion type rather than by the extractor's
+  `TYPE$` naming convention. Core ECMAScript declares its constructors as named companion
+  interfaces (`declare var Error: ErrorConstructor`), so `(js/Error. "boom")` — along with `Date`,
+  `Map`, `Set`, `Promise`, `Proxy`, `Array`, `Object`, `RegExp`, the typed arrays, and the rest of
+  the 45 affected globals — was falsely reported as "not constructable". Globals whose companion
+  declares no `new` signature (`js/NodeFilter`, `js/Symbol`, `js/BigInt`, `js/Iterator`) are
+  correctly no longer treated as constructors.
+- Quick Documentation and Parameter Info on `(js/Error. …)` now show the real `new` overloads,
+  which previously resolved to nothing for every global constructor.
+
 ## [1.3.0]
 
 ### Added

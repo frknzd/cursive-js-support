@@ -516,7 +516,14 @@ fun `known functions are indexed`() =
     @Test fun `isConstructorGlobal true for Promise`() { assertTrue(index.isConstructorGlobal("Promise")) }
     @Test fun `isConstructorGlobal true for MutationObserver`() { assertTrue(index.isConstructorGlobal("MutationObserver")) }
     @Test fun `isConstructorGlobal true for TextEncoder`() { assertTrue(index.isConstructorGlobal("TextEncoder")) }
-    @Test fun `isConstructorGlobal true for NodeFilter`() { assertTrue(index.isConstructorGlobal("NodeFilter")) }
+    // `NodeFilter` is a const bag of FILTER_/SHOW_ flags typed by an anonymous companion with no
+    // `new` signature — `(js/NodeFilter.)` is not a valid constructor call.
+    @Test fun `isConstructorGlobal false for NodeFilter flag bag`() { assertTrue(!index.isConstructorGlobal("NodeFilter")) }
+    @Test fun `isConstructorGlobal false for Symbol`() { assertTrue(!index.isConstructorGlobal("Symbol")) }
+    @Test fun `isConstructorGlobal false for BigInt`() { assertTrue(!index.isConstructorGlobal("BigInt")) }
+    @Test fun `isConstructorGlobal true for Date`() { assertTrue(index.isConstructorGlobal("Date")) }
+    @Test fun `isConstructorGlobal true for Map`() { assertTrue(index.isConstructorGlobal("Map")) }
+    @Test fun `isConstructorGlobal true for TypeError`() { assertTrue(index.isConstructorGlobal("TypeError")) }
     @Test fun `isConstructorGlobal true for Event`() { assertTrue(index.isConstructorGlobal("Event")) }
     @Test fun `isConstructorGlobal true for AbortController`() { assertTrue(index.isConstructorGlobal("AbortController")) }
     @Test fun `isConstructorGlobal false for document`() { assertTrue(!index.isConstructorGlobal("document")) }
