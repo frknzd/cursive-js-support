@@ -5,6 +5,7 @@ import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
 import com.intellij.openapi.extensions.ExtensionPointName
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.vfs.VirtualFile
 import java.io.File
 import java.time.Instant
 import java.util.concurrent.atomic.AtomicReference
@@ -60,6 +61,28 @@ class CljsProjectModel(private val project: Project) {
     }
 
     fun index(): JsSymbolIndex = JsSymbolIndex.getInstance(project)
+
+    /**
+     * Runtime targets that cover [file], i.e. the union of [CljsBuildProfile.target] for every
+     * build profile whose `source-paths` contain the file. Returns an empty set when no profile
+     * covers the file (unknown/mixed target) — callers should then show symbols from every
+     * environment rather than filtering.
+     */
+    fun runtimeTargetsForFile(file: VirtualFile): Set<CljsRuntimeTarget> {
+        val path = file.path
+        val targets = mutableSetOf<CljsRuntimeTarget>()
+        for (profile in profiles) {
+            val workDir = profile.resolvedWorkingDirectory(File(project.basePath ?: return emptySet()))
+            for (src in profile.sourcePaths) {
+                val srcDir = File(src).let { if (it.isAbsolute) it else File(workDir, src) }.normalize()
+                if (path.startsWith(srcDir.absolutePath + File.separator) || path == srcDir.absolutePath) {
+                    targets.add(profile.target)
+                    break
+                }
+            }
+        }
+        return targets
+    }
 
     companion object {
         private val ADAPTER_EP = ExtensionPointName.create<CljsBuildProfileAdapter>("com.cursivejssupport.buildProfileAdapter")

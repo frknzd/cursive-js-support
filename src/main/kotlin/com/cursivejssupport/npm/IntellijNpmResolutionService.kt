@@ -17,6 +17,11 @@ import java.io.File
 class IntellijNpmResolutionService(private val project: Project) {
 
     fun resolveExports(anchor: PsiFile, packageName: String): List<PsiElement> {
+        // Relative JS requires (`./helper.js`, `/abs/path.js`) resolve against the requiring file /
+        // build source paths, not node_modules; enumerate the target file's exports directly.
+        if (packageName.startsWith(".") || packageName.startsWith("/")) {
+            return resolveRelativeExports(anchor, packageName)
+        }
         val anchorFile = anchor.virtualFile ?: return emptyList()
         project.basePath?.let { File(it) } ?: return emptyList()
 
@@ -42,6 +47,32 @@ class IntellijNpmResolutionService(private val project: Project) {
         return named.values + unnamed
     }
 
+    /**
+     * Enumerate the exports of a relative JS require (`./helper.js`) by resolving the target file
+     * via [RelativeModuleResolver] and asking IntelliJ's JS plugin for its exported elements.
+     */
+    fun resolveRelativeExports(anchor: PsiFile, requirePath: String): List<PsiElement> {
+        val target = RelativeModuleResolver.resolve(anchor, requirePath) ?: return emptyList()
+        val psiFile = PsiManager.getInstance(project).findFile(target) ?: return emptyList()
+        if (psiFile is JSFile) {
+            val exports = JSResolveUtil.getExportedElements(psiFile) ?: emptyList()
+            if (exports.size == 1) {
+                val single = exports.first()
+                if (single.javaClass.simpleName.contains("Namespace")) {
+                    IntellijNamespaceMembers.members(single).takeIf(List<PsiElement>::isNotEmpty)?.let { return it }
+                }
+            }
+            return exports
+        }
+        return emptyList()
+    }
+
+    fun resolveRelativeExport(anchor: PsiFile, requirePath: String, exportName: String): PsiElement? {
+        val exports = resolveRelativeExports(anchor, requirePath)
+        return exports.firstOrNull { (it as? com.intellij.lang.javascript.psi.JSNamedElement)?.name == exportName }
+            ?: if (exportName == "default") exports.singleOrNull() else null
+    }
+
     private fun exportsFrom(moduleFile: VirtualFile): List<PsiElement> {
         val psiFile = PsiManager.getInstance(project).findFile(moduleFile)
         if (psiFile is JSFile) {
@@ -60,6 +91,9 @@ class IntellijNpmResolutionService(private val project: Project) {
     }
 
     fun resolveExport(anchor: PsiFile, packageName: String, exportName: String): PsiElement? {
+        if (packageName.startsWith(".") || packageName.startsWith("/")) {
+            return resolveRelativeExport(anchor, packageName, exportName)
+        }
         val exports = resolveExports(anchor, packageName)
         return exports.firstOrNull { (it as? com.intellij.lang.javascript.psi.JSNamedElement)?.name == exportName }
             ?: if (exportName == "default") exports.singleOrNull() else null

@@ -116,7 +116,7 @@ object JsResolveUtil {
                     val constructorName = ht.removeSuffix(".")
                     val arguments = meaningfulChildren(element).drop(1).map { resolve(it, index, state)?.ref }
                     val binding = head.containingFile?.let { CljsPsiTypeRules.npmBinding(it, constructorName) }
-                    if (binding != null && binding.kind in setOf(NpmBindingKind.REFER, NpmBindingKind.DEFAULT)) {
+                    if (binding != null && binding.kind in setOf(NpmBindingKind.REFER, NpmBindingKind.DEFAULT, NpmBindingKind.RELATIVE)) {
                         val export = binding.exportName ?: "default"
                         val descriptor = head.project.service<InteropSemanticService>()
                             .exportType(head.containingFile, binding.packageName, export)
@@ -164,6 +164,7 @@ object JsResolveUtil {
                 val semanticExport = when (binding.kind) {
                     NpmBindingKind.REFER -> binding.exportName ?: full
                     NpmBindingKind.DEFAULT -> "default"
+                    NpmBindingKind.RELATIVE -> binding.exportName
                     NpmBindingKind.AS, NpmBindingKind.ALL -> null
                 }
                 if (semanticExport != null) {
@@ -194,9 +195,10 @@ object JsResolveUtil {
                         }
                         t
                     }
-                    NpmBindingKind.AS, NpmBindingKind.ALL -> {
-                        // :as/:all Alias — the alias is a module namespace object, not a typed value.
-                        // Type inference via dot forms on the alias itself is not meaningful.
+                    NpmBindingKind.AS, NpmBindingKind.ALL, NpmBindingKind.RELATIVE -> {
+                        // :as/:all Alias (or a relative module namespace object) — the alias is a
+                        // module namespace object, not a typed value. Type inference via dot forms
+                        // on the alias itself is not meaningful.
                         null
                     }
                 }
@@ -371,7 +373,7 @@ object JsResolveUtil {
         }
         if (head is ClEditorSymbol && !head.text.startsWith(".")) {
             val binding = head.containingFile?.let { CljsPsiTypeRules.npmBinding(it, head.text) }
-            if (binding != null && binding.kind in setOf(NpmBindingKind.REFER, NpmBindingKind.DEFAULT)) {
+            if (binding != null && binding.kind in setOf(NpmBindingKind.REFER, NpmBindingKind.DEFAULT, NpmBindingKind.RELATIVE)) {
                 val export = binding.exportName ?: "default"
                 val semantic = head.project.service<InteropSemanticService>()
                     .exportType(head.containingFile, binding.packageName, export)

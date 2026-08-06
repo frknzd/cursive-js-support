@@ -27,7 +27,7 @@ object NsAliasResolver {
         val nsForm = findNsForm(file) ?: return emptyMap()
         val merged = LinkedHashMap<String, NpmBinding>()
         for (requireForm in findAllRequireForms(nsForm)) {
-            merged.putAll(extractAliases(requireForm))
+            merged.putAll(extractAliases(requireForm, file))
         }
         for (importForm in findAllImportForms(nsForm)) {
             merged.putAll(extractImportAliases(importForm))
@@ -179,7 +179,7 @@ object NsAliasResolver {
     private fun isGoogNamespace(text: String): Boolean =
         text == "goog" || text.startsWith("goog.")
 
-    private fun extractAliases(requireForm: PsiElement): Map<String, NpmBinding> {
+    private fun extractAliases(requireForm: PsiElement, file: PsiFile): Map<String, NpmBinding> {
         val aliases = mutableMapOf<String, NpmBinding>()
 
         requireForm.children.forEach { spec ->
@@ -199,8 +199,11 @@ object NsAliasResolver {
                 when {
                     firstText.startsWith("\"") -> {
                         val packageName = firstText.trim('"')
-                        if (packageName.startsWith(".") || packageName.startsWith("/")) return@forEach
-                        parseNpmRequireSpec(items, packageName, aliases)
+                        if (packageName.startsWith(".") || packageName.startsWith("/")) {
+                            parseRelativeRequireSpec(items, packageName, file, aliases)
+                        } else {
+                            parseNpmRequireSpec(items, packageName, aliases)
+                        }
                     }
                     isGoogNamespace(firstText) -> parseGoogRequireSpec(items, firstText, aliases)
                     else -> return@forEach
@@ -209,6 +212,78 @@ object NsAliasResolver {
         }
 
         return aliases
+    }
+
+    /**
+     * Bind `(:require ["./helper.js" :as helper] …)` and absolute `"/abs/path.js"` forms.
+     * The package string is kept verbatim for display; the resolved target file path is stored
+     * on the binding so semantic/goto can jump straight to it.
+     */
+    private fun parseRelativeRequireSpec(
+        items: List<PsiElement>,
+        requirePath: String,
+        file: PsiFile,
+        aliases: MutableMap<String, NpmBinding>,
+    ) {
+        val resolved = RelativeModuleResolver.resolve(file, requirePath)?.path
+        var i = 1
+        while (i < items.size) {
+            val text = items[i].text
+            if (text == ":as") {
+                if (i + 1 < items.size) {
+                    val alias = items[i + 1].text
+                    if (alias.isNotBlank()) aliases[alias] = NpmBinding(requirePath, NpmBindingKind.RELATIVE, relativeFilePath = resolved)
+                }
+                i += 2; continue
+            } else if (text == ":default") {
+                if (i + 1 < items.size) {
+                    val alias = items[i + 1].text
+                    if (alias.isNotBlank()) aliases[alias] = NpmBinding(requirePath, NpmBindingKind.RELATIVE, exportName = "default", relativeFilePath = resolved)
+                }
+                i += 2; continue
+            } else if (text == ":all") {
+                if (i + 1 < items.size) {
+                    val alias = items[i + 1].text
+                    if (alias.isNotBlank()) aliases[alias] = NpmBinding(requirePath, NpmBindingKind.RELATIVE, relativeFilePath = resolved)
+                }
+                i += 2; continue
+            } else if (text == ":refer") {
+                if (i + 1 < items.size) {
+                    val referCollection = items[i + 1]
+                    if (referCollection.text.startsWith("[") || referCollection.text.startsWith("(")) {
+                        referCollection.children.forEach { child ->
+                            if (child !is PsiWhiteSpace && child !is PsiComment &&
+                                child.text != "[" && child.text != "]" &&
+                                child.text != "(" && child.text != ")") {
+                                val refName = child.text
+                                if (refName.isNotBlank()) aliases[refName] = NpmBinding(requirePath, NpmBindingKind.RELATIVE, exportName = refName, relativeFilePath = resolved)
+                            }
+                        }
+                    }
+                }
+                i += 2; continue
+            } else if (text == ":rename") {
+                if (i + 1 < items.size) applyRelativeRenamePairs(items[i + 1], requirePath, resolved, aliases)
+                i += 2; continue
+            }
+            i++
+        }
+    }
+
+    private fun applyRelativeRenamePairs(renameCollection: PsiElement, requirePath: String, resolved: String?, aliases: MutableMap<String, NpmBinding>) {
+        val kids = renameCollection.children.filter {
+            it !is PsiWhiteSpace && it !is PsiComment &&
+                it.text != "{" && it.text != "}" &&
+                it.text != "[" && it.text != "]" &&
+                it.text != "(" && it.text != ")"
+        }
+        var j = 0
+        while (j + 1 < kids.size) {
+            val from = kids[j].text.removePrefix(":").trim()
+            val to = kids[j + 1].text.removePrefix(":").trim()
+            if (to.isNotBlank()) aliases[to] = NpmBinding(requirePath, NpmBindingKind.RELATIVE, exportName = from, relativeFilePath = resolved)
+            j += 2
+        }
     }
 
     private fun parseNpmRequireSpec(items: List<PsiElement>, packageName: String, aliases: MutableMap<String, NpmBinding>) {

@@ -19,6 +19,15 @@ class BuildProfileAdaptersTest {
         assertEquals(CljsRuntimeTarget.NODE, profiles.first { it.id == "shadow:worker" }.target)
     }
 
+    @Test fun `shadow adapter captures source-paths`() = withTempDir { root ->
+        File(root, "shadow-cljs.edn").writeText(
+            """{:source-paths ["src" "scripts"]
+               :builds {:worker {:target :node-script :output-dir "out/worker"}}}""",
+        )
+        val profile = ShadowCljsBuildProfileAdapter().discover(root).single()
+        assertEquals(listOf("src", "scripts"), profile.sourcePaths)
+    }
+
     @Test fun `cljs main adapter discovers compiler edn`() = withTempDir { root ->
         File(root, "dev.cljs.edn").writeText("{:target :nodejs :output-dir \"target/out\"}")
         val profile = CljsMainBuildProfileAdapter().discover(root).single()

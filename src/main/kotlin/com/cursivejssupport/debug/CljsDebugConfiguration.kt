@@ -104,7 +104,8 @@ class CljsDebugConfiguration(
 
     private fun endpoint(profile: CljsBuildProfile): String = when (profile.target) {
         CljsRuntimeTarget.BROWSER -> overrideUrl.ifBlank { profile.browserUrl.orEmpty() }
-        CljsRuntimeTarget.NODE -> "http://${overrideHost.ifBlank { profile.inspectHost }}:${overridePort.takeIf { it > 0 } ?: profile.inspectPort ?: 9229}"
+        CljsRuntimeTarget.NODE, CljsRuntimeTarget.BUN, CljsRuntimeTarget.DENO ->
+            "http://${overrideHost.ifBlank { profile.inspectHost }}:${overridePort.takeIf { it > 0 } ?: profile.inspectPort ?: 9229}"
     }
 
     private fun selectedProfile(): CljsBuildProfile? =

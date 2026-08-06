@@ -1,6 +1,7 @@
 package com.cursivejssupport.completion
 
 import com.cursivejssupport.index.JsSymbolIndex
+import com.cursivejssupport.index.JsEnvironment
 import com.cursivejssupport.parser.JsMember
 import com.cursivejssupport.util.JsResolveUtil
 import com.intellij.codeInsight.completion.CompletionResultSet
@@ -40,10 +41,11 @@ object InteropCompletionItems {
         listAroundCaret: PsiElement?,
     ): Int = when (context) {
         is InteropCompletionContext.None -> 0
-        is InteropCompletionContext.JsGlobalName -> emitJsGlobals(index, result)
+        is InteropCompletionContext.JsGlobalName -> emitJsGlobals(index, file, result)
         is InteropCompletionContext.JsChainMember -> emitJsChainMembers(context, index, result)
         is InteropCompletionContext.DotMember -> emitDotMembers(context, index, result, listAroundCaret)
         is InteropCompletionContext.NsRequirePackage -> 0 // handled by contributor (needs Project)
+        is InteropCompletionContext.NsRequireRelativePackage -> 0 // handled by contributor (needs Project)
         is InteropCompletionContext.NsRequireKeyword -> emitRequireKeywords(context, result)
         is InteropCompletionContext.NsRefer -> emitRefer(context, file, index, result)
         is InteropCompletionContext.NpmAliasName -> emitNpmAliasNames(context, result)
@@ -77,23 +79,103 @@ object InteropCompletionItems {
         return n
     }
 
+    /**
+     * Complete `(:require ["./<prefix>"])` with `.js`/`.mjs`/`.cjs` files found under the build's
+     * source paths and next to the requiring [file] (shadow-cljs namespace-relative imports).
+     * The lookup string is the path as the user would type it (relative to the requiring file's
+     * directory), so it round-trips into the buffer verbatim.
+     */
+    fun emitRelativeRequireFiles(file: PsiFile, prefix: String, result: CompletionResultSet): Int {
+        val requiring = file.virtualFile?.parent ?: return 0
+        val project = file.project
+        val model = project.service<com.cursivejssupport.project.CljsProjectModel>()
+        val seen = LinkedHashSet<String>()
+        // Namespace-relative: paths the user would type relative to the requiring file's directory.
+        collectRelativeFiles(requiring, requiring, prefix, seen)
+        // Source-path-relative fallback: resolve the prefix against each source root and present
+        // the result as a ./-prefixed path relative to the requiring file.
+        for (profile in model.profiles) {
+            for (src in profile.sourcePaths) {
+                val srcDir = resolveSourceDir(project, src, profile.workingDirectory) ?: continue
+                collectRelativeFiles(requiring, srcDir, prefix, seen)
+            }
+        }
+        var n = 0
+        for (path in seen) {
+            result.addElement(relativeFileLookup(path))
+            n++
+        }
+        return n
+    }
+
+    private fun collectRelativeFiles(
+        requiringDir: com.intellij.openapi.vfs.VirtualFile,
+        dir: com.intellij.openapi.vfs.VirtualFile,
+        prefix: String,
+        out: MutableSet<String>,
+    ) {
+        val cleanPrefix = prefix.removePrefix("./").removePrefix("/")
+        // Walk up to the directory implied by the prefix (e.g. "./scripts/sub" → scripts/sub).
+        val base = if (cleanPrefix.contains('/')) {
+            val dirPart = cleanPrefix.substringBeforeLast('/').trimEnd('/')
+            com.intellij.openapi.vfs.VfsUtil.findRelativeFile(dirPart, dir)?.takeIf { it.isDirectory } ?: return
+        } else dir
+        val filePrefix = cleanPrefix.substringAfterLast('/')
+        for (child in base.children) {
+            if (child.isDirectory) continue
+            val name = child.name
+            if (!name.endsWith(".js") && !name.endsWith(".mjs") && !name.endsWith(".cjs")) continue
+            if (!name.startsWith(filePrefix)) continue
+            // Present as a path relative to the requiring file's directory, ./-prefixed.
+            val relative = com.intellij.openapi.vfs.VfsUtil.getRelativePath(requiringDir, child) ?: continue
+            out.add("./$relative")
+        }
+    }
+
+    private fun resolveSourceDir(
+        project: com.intellij.openapi.project.Project,
+        sourcePath: String,
+        workingDirectory: String,
+    ): com.intellij.openapi.vfs.VirtualFile? {
+        val javaFile = java.io.File(sourcePath).let { if (it.isAbsolute) it else java.io.File(java.io.File(workingDirectory), sourcePath) }.normalize()
+        return com.intellij.openapi.vfs.LocalFileSystem.getInstance().findFileByIoFile(javaFile)
+    }
+
+    private fun relativeFileLookup(path: String): LookupElement =
+        LookupElementBuilder.create(path)
+            .withPresentableText(path)
+            .withTypeText("js")
+            .withIcon(JsInteropCompletionIcons.forNpmNamespaceAlias())
+
     // ─── Producers ──────────────────────────────────────────────────────────
 
-    private fun emitJsGlobals(index: JsSymbolIndex, result: CompletionResultSet): Int {
+    private fun emitJsGlobals(index: JsSymbolIndex, file: PsiFile, result: CompletionResultSet): Int {
         if (!index.isLoaded) return 0
+        // Filter globals by the requiring file's runtime target so `js/process` only appears in
+        // Node-targeted files and `js/document` only in browser-targeted files. When no build
+        // profile covers the file (unknown/mixed target) every environment is visible.
+        val visible = JsEnvironment.visibleForTargets(
+            com.cursivejssupport.project.CljsProjectModel.getInstance(file.project).runtimeTargetsForFile(file.virtualFile ?: return 0)
+        )
         var n = 0
         for (name in index.allGlobalNames()) {
             val info = index.resolveGlobalInfo(name) ?: continue
+            val env = JsEnvironment.fromWire(info.environment)
+            if (!visible.contains(env)) continue
             val element = if (index.isConstructorGlobal(name)) {
-                globalConstructorLookup(name)
+                globalConstructorLookup(name, env.badge)
             } else {
-                globalVariableLookup(name, info.type)
+                globalVariableLookup(name, info.type, env.badge)
             }
             result.addElement(element)
             n++
         }
         for (name in index.allFunctionNames()) {
-            result.addElement(globalFunctionLookup(name))
+            // Function globals carry environment on their first overload; reuse the same filter.
+            val overloads = index.resolveFunctions(name).orEmpty()
+            val env = JsEnvironment.fromWire(overloads.firstOrNull()?.environment)
+            if (!visible.contains(env)) continue
+            result.addElement(globalFunctionLookup(name, env.badge))
             n++
         }
         return n
@@ -329,23 +411,26 @@ object InteropCompletionItems {
 
     // ─── Lookup builders ────────────────────────────────────────────────────
 
-    private fun globalVariableLookup(name: String, type: String): LookupElement =
+    private fun globalVariableLookup(name: String, type: String, badge: String? = null): LookupElement =
         LookupElementBuilder.create(name)
             .withPresentableText(name)
             .withTypeText(type)
+            .withTailText(badge?.let { " ($it)" }.orEmpty())
             .withIcon(JsInteropCompletionIcons.forGlobalVariable())
 
-    private fun globalConstructorLookup(name: String): LookupElement =
+    private fun globalConstructorLookup(name: String, badge: String? = null): LookupElement =
         LookupElementBuilder.create(name)
             .withPresentableText(name)
             .withTypeText("class")
+            .withTailText(badge?.let { " ($it)" }.orEmpty())
             .withIcon(JsInteropCompletionIcons.forGlobalConstructor())
             .withInsertHandler(ConstructorInsertHandler)
 
-    private fun globalFunctionLookup(name: String): LookupElement =
+    private fun globalFunctionLookup(name: String, badge: String? = null): LookupElement =
         LookupElementBuilder.create(name)
             .withPresentableText(name)
             .withTypeText("function")
+            .withTailText(badge?.let { " ($it)" }.orEmpty())
             .withIcon(JsInteropCompletionIcons.forGlobalFunction())
             .withInsertHandler(CallHeadInsertHandler)
 

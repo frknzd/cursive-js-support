@@ -10,7 +10,7 @@ package com.cursivejssupport.parser
 fun ParsedSymbols.withSyntheticGlobalThis(): ParsedSymbols {
     if (variables.containsKey("globalThis")) return this
     val model = variables["window"] ?: variables["self"] ?: return this
-    val globalThis = JsVariableInfo(type = model.type, doc = GLOBAL_THIS_DOC, location = model.location)
+    val globalThis = JsVariableInfo(type = model.type, doc = GLOBAL_THIS_DOC, location = model.location, environment = model.environment)
     return copy(variables = variables + ("globalThis" to globalThis))
 }
 

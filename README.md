@@ -1,10 +1,13 @@
 # Cursive JS Support
 
-A companion plugin for [Cursive](https://cursive-ide.com/) that brings JavaScript interop awareness to ClojureScript files. It provides completion, documentation, and go-to-declaration for `js/`, `(.method receiver)`, `(.-prop receiver)`, and shadow-cljs `(:require ["pkg" :as alias :refer […]])` forms. Completion is driven by the TypeScript 7.0.2 DOM and standard-library declarations (including the current ECMAScript 2026/`esnext` surface) plus any `.d.ts` files found in your project's `node_modules` (including shadow-cljs `:npm-deps` packages and workspace-style `packages/*`).
+A companion plugin for [Cursive](https://cursive-ide.com/) that brings JavaScript interop awareness to ClojureScript files. It provides completion, documentation, and go-to-declaration for `js/`, `(.method receiver)`, `(.-prop receiver)`, and shadow-cljs `(:require ["pkg" :as alias :refer […]])` forms — including Node.js, Bun, and Deno built-ins (`["fs" :as fs]`, `["node:fs/promises" :as fs-promises]`, `["bun:sqlite" :as sqlite]`) and relative JavaScript requires (`["./helper.js" :as helper]`). Completion is driven by the TypeScript 7.0.2 DOM and standard-library declarations (including the current ECMAScript 2026/`esnext` surface), bundled Node/Bun/Deno type indexes, and any `.d.ts` files found in your project's `node_modules` (including shadow-cljs `:npm-deps` packages and workspace-style `packages/*`).
 
 Version 1.0 also adds project-scoped indexing, shadow-cljs/`cljs.main`/Figwheel build discovery,
 parameter info, confidence-aware inspections and quick fixes, modern npm subpath resolution,
-and source-map debugging through IntelliJ's JavaScript debugger. Use the **ClojureScript JS**
+and source-map debugging through IntelliJ's JavaScript debugger. `js/*` globals are filtered
+per file by the covering build's runtime target (browser vs Node vs Bun vs Deno), with
+environment badges in hover and completion, so `js/process` only appears in Node-targeted
+files and `js/document` only in browser-targeted files. Use the **ClojureScript JS**
 tool window to inspect detected builds and indexing health.
 
 ## Using it
@@ -64,10 +67,10 @@ Launch a sandbox IDE with the plugin loaded:
 
 See [TESTING.md](TESTING.md) for editing examples and copyable browser/Node debugging fixtures.
 
-The bundled browser symbol index is committed to `src/main/resources/js/browser-symbols.json.gz`. To regenerate it from the TypeScript `.d.ts` files (requires Node.js on `PATH`):
+The bundled symbol indexes are committed to `src/main/resources/js/` (`browser-symbols.json.gz`, `node-symbols.json.gz`, `bun-symbols.json.gz`, `deno-symbols.json.gz`). To regenerate them from the TypeScript `.d.ts` sources (requires Node.js on `PATH`):
 
 ```
-./gradlew generateBrowserSymbolsIndex
+./gradlew generateBrowserSymbolsIndex generateNodeSymbolsIndex generateBunSymbolsIndex generateDenoSymbolsIndex
 ```
 
 ## Release

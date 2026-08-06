@@ -1,6 +1,7 @@
 package com.cursivejssupport.documentation
 
 import com.cursivejssupport.parser.JsMember
+import com.cursivejssupport.index.JsEnvironment
 import com.intellij.lang.documentation.DocumentationMarkup
 
 /**
@@ -55,6 +56,7 @@ object InteropDocFormatter {
             definition = definition,
             member = null,
             doc = subject.info.doc,
+            badge = badgeFor(subject.info.environment),
         )
     }
 
@@ -69,6 +71,7 @@ object InteropDocFormatter {
             definition = definition,
             member = subject.overload,
             doc = subject.overload.doc,
+            badge = badgeFor(subject.overload.environment),
         )
     }
 
@@ -87,6 +90,7 @@ object InteropDocFormatter {
             definition = definition,
             member = member,
             doc = member.doc,
+            badge = badgeFor(member.environment),
         )
     }
 
@@ -256,10 +260,16 @@ object InteropDocFormatter {
         member: JsMember?,
         doc: String?,
         extraContent: String? = null,
+        badge: String? = null,
     ): String = buildString {
         val parsed = JsDocTags.parse(doc)
 
         append(DocumentationMarkup.DEFINITION_START)
+        if (!badge.isNullOrBlank()) {
+            append("<span style=\"color:#888;font-size:smaller\">")
+            append(escapeInline(badge))
+            append("</span><br/>")
+        }
         append(definition.trim().replace("\n", "<br/>"))
         append(DocumentationMarkup.DEFINITION_END)
 
@@ -302,6 +312,10 @@ object InteropDocFormatter {
             append(DocumentationMarkup.SECTIONS_END)
         }
     }
+
+    /** Render the runtime-environment badge for a symbol's [environment] wire tag, or null. */
+    private fun badgeFor(environment: String?): String? =
+        JsEnvironment.fromWire(environment).badge
 
     private fun renderContent(rawDoc: String?): Pair<String?, String?> {
         if (rawDoc.isNullOrBlank()) return null to null

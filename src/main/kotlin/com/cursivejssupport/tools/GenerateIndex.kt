@@ -36,7 +36,7 @@ fun main() {
 
     val parser = DtsParser(nodePath)
     try {
-        val parsedSymbols = parser.parse(filesToParse).withLogicalBundledLibPaths()
+        val parsedSymbols = parser.parse(filesToParse, environment = "browser").withLogicalBundledLibPaths()
 
         val outputFile = File("src/main/resources/js/browser-symbols.json.gz")
         outputFile.parentFile.mkdirs()

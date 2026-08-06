@@ -4,6 +4,29 @@
 
 ## [Unreleased]
 
+### Added
+- Node.js, Bun, and Deno built-in APIs are now indexed and offered alongside the browser
+  globals. `["fs" :as fs]`, `["path" :as path]`, `["node:fs/promises" :as fs-promises]`, and
+  `["bun:sqlite" :as sqlite]` resolve to real exports with hover docs, completion, and
+  goto-declaration. Bundled `node-symbols.json.gz`, `bun-symbols.json.gz`, and
+  `deno-symbols.json.gz` ship with the plugin; `node:` / `bun:` prefixes are normalized for
+  index lookups while the original spelling is preserved for display.
+- Relative JavaScript requires such as `["./capture_util.js" :as capture-util-impl]` now resolve.
+  `RelativeModuleResolver` mirrors shadow-cljs: namespace-relative resolution against the build's
+  `:source-paths` first, falling back to physical resolution relative to the requiring `.cljs`
+  file. Completion lists matching `.js` / `.mjs` / `.cjs` files under the source roots, and
+  goto-declaration jumps into the target file or its named exports via IntelliJ's JavaScript
+  plugin (`JSResolveUtil.getExportedElements`).
+- Environment-aware completion and hover. Each `.cljs` file is mapped to the runtime targets of
+  the build profiles whose `:source-paths` cover it (`CljsProjectModel.runtimeTargetsForFile`),
+  and `js/*` globals are filtered accordingly — `js/process` only appears in Node-targeted files,
+  `js/document` only in browser-targeted files. Files covered by no profile (or by a mix) see
+  every environment. Bun builds implicitly see Node built-ins.
+- Environment badges in hover headers and completion tail text (Browser / Node.js / Bun / Deno /
+  ECMAScript) so backend and browser APIs are visually distinguishable.
+- `:source-paths` is now parsed from `shadow-cljs.edn`, `cljs.main` (`dev.cljs.edn`), and
+  `figwheel-main` build configs to drive per-file runtime-target detection.
+
 ## [1.3.2]
 
 ## [1.3.1]

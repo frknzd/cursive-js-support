@@ -33,7 +33,8 @@ data class JsMember(
     val type: String = "any",
     val optional: Boolean = false,
     val doc: String? = null,
-    val location: JsLocation? = null
+    val location: JsLocation? = null,
+    val environment: String? = null,
 )
 
 data class JsInterface(
@@ -41,13 +42,17 @@ data class JsInterface(
     val extends: List<String> = emptyList(),
     val members: Map<String, List<JsMember>> = emptyMap(),
     /** Declared type parameter names (`["T"]` for `NodeListOf<T>`); empty for legacy indexes. */
-    val typeParams: List<String> = emptyList()
+    val typeParams: List<String> = emptyList(),
+    /** Runtime environment this interface belongs to (browser/node/bun/deno/common); null for legacy indexes. */
+    val environment: String? = null,
 )
 
 data class JsVariableInfo(
     val type: String = "any",
     val doc: String? = null,
-    val location: JsLocation? = null
+    val location: JsLocation? = null,
+    /** Runtime environment this global/variable belongs to (browser/node/bun/deno/common); null for legacy indexes. */
+    val environment: String? = null,
 )
 
 data class ParsedSymbols(
@@ -58,6 +63,12 @@ data class ParsedSymbols(
     val aliases:    Map<String, String>         = emptyMap(),
     /** Runtime exports of an external module; null means a global declaration file. */
     val moduleExports: Set<String>? = null,
+    /** Runtime environment for this symbol set (browser/node/bun/deno/common); null for legacy indexes. */
+    val environment: String? = null,
+    /** Ambient external modules (`declare module "fs" {...}`) keyed by module name. Each entry is a
+     *  self-contained [ParsedSymbols] whose interfaces are prefixed with `MODULE$<module>$` so they
+     *  don't collide with the browser index when loaded into the global interface map. */
+    val modules: Map<String, ParsedSymbols> = emptyMap(),
 )
 
 // ─── Parser ───────────────────────────────────────────────────────────────────
@@ -82,8 +93,13 @@ class DtsParser(nodeExecutable: String) : AutoCloseable {
         reader = process.inputStream.bufferedReader(Charsets.UTF_8)
     }
 
-    fun parse(files: Map<String, String>, roots: Collection<String> = files.keys): ParsedSymbols {
-        val inputJson = mapper.writeValueAsString(mapOf("files" to files, "roots" to roots))
+    fun parse(files: Map<String, String>, roots: Collection<String> = files.keys, environment: String? = null): ParsedSymbols {
+        val payload = if (environment == null) {
+            mapOf("files" to files, "roots" to roots)
+        } else {
+            mapOf("files" to files, "roots" to roots, "environment" to environment)
+        }
+        val inputJson = mapper.writeValueAsString(payload)
         writer.write(inputJson)
         writer.newLine()
         writer.flush()

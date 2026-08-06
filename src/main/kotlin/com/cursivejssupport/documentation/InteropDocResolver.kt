@@ -1,6 +1,7 @@
 package com.cursivejssupport.documentation
 
 import com.cursivejssupport.index.JsSymbolIndex
+import com.cursivejssupport.index.JsEnvironment
 import com.cursivejssupport.npm.NpmBinding
 import com.cursivejssupport.semantic.InteropSemanticService
 import com.cursivejssupport.parser.JsMember
@@ -9,6 +10,7 @@ import com.cursivejssupport.util.JsResolveUtil
 import com.cursivejssupport.util.JsInteropPsi
 import com.intellij.openapi.components.service
 import com.intellij.psi.PsiElement
+import com.intellij.psi.PsiFile
 import cursive.psi.api.ClList
 import cursive.psi.impl.symbols.ClEditorSymbol
 
@@ -91,7 +93,7 @@ object InteropDocResolver {
 
         val aliases = symbol.containingFile?.let { symbol.project.service<InteropSemanticService>().bindings(it) } ?: emptyMap()
 
-        val subject = resolveFromParts(namespace, name, receiverType, aliases, index)
+        val subject = resolveFromParts(namespace, name, receiverType, aliases, index, symbol.containingFile)
         if (subject is InteropDocSubject.Member && receiverText != null) {
             return subject.copy(receiverText = receiverText)
         }
@@ -125,6 +127,7 @@ object InteropDocResolver {
         receiverType: String?,
         aliases: Map<String, NpmBinding>,
         index: JsSymbolIndex,
+        file: PsiFile? = null,
     ): InteropDocSubject {
         if (name.isEmpty()) return InteropDocSubject.Unknown
         // Constructor call head: `(Foo. …)` / `(js/Foo. …)`.
@@ -133,8 +136,8 @@ object InteropDocResolver {
         }
         return when {
             namespace == "js" && name.contains('.') ->
-                resolveJsChain(name, index) ?: resolveJsGlobal(name, index)
-            namespace == "js" -> resolveJsGlobal(name, index)
+                resolveJsChain(name, index) ?: resolveJsGlobal(name, index, file)
+            namespace == "js" -> resolveJsGlobal(name, index, file)
             name.startsWith(".") -> resolveMemberFromParts(name, receiverType, index)
             namespace != null -> resolveNpmExportFromParts(namespace, name, aliases, index)
             else -> resolveBareAliasFromParts(name, aliases, index)
@@ -164,13 +167,22 @@ object InteropDocResolver {
 
     // ─── js/* ──────────────────────────────────────────────────────────────
 
-    private fun resolveJsGlobal(name: String, index: JsSymbolIndex): InteropDocSubject {
+    private fun resolveJsGlobal(name: String, index: JsSymbolIndex, file: PsiFile?): InteropDocSubject {
+        val visible = visibleEnvironments(file)
         index.resolveGlobalInfo(name)?.let {
+            if (!visible.contains(JsEnvironment.fromWire(it.environment))) return InteropDocSubject.Unknown
             return InteropDocSubject.JsGlobal(name, it, isConstructor = index.isConstructorGlobal(name))
         }
         val overloads = index.resolveFunctions(name).orEmpty()
         val first = overloads.firstOrNull() ?: return InteropDocSubject.Unknown
+        if (!visible.contains(JsEnvironment.fromWire(first.environment))) return InteropDocSubject.Unknown
         return InteropDocSubject.JsFunction(name, first, overloads)
+    }
+
+    private fun visibleEnvironments(file: PsiFile?): Set<JsEnvironment> {
+        val vf = file?.virtualFile ?: return JsEnvironment.values().toSet()
+        val targets = com.cursivejssupport.project.CljsProjectModel.getInstance(file.project).runtimeTargetsForFile(vf)
+        return JsEnvironment.visibleForTargets(targets)
     }
 
     private fun resolveJsChain(name: String, index: JsSymbolIndex): InteropDocSubject? {

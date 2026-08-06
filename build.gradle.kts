@@ -164,6 +164,30 @@ tasks.register<JavaExec>("generateBrowserSymbolsIndex") {
     workingDir = rootDir
 }
 
+tasks.register<JavaExec>("generateNodeSymbolsIndex") {
+    group = "build"
+    description = "Regenerate node-symbols.json.gz from vendored @types/node .d.ts files (requires Node.js)."
+    classpath = sourceSets.getByName("main").runtimeClasspath
+    mainClass.set("com.cursivejssupport.tools.GenerateNodeIndexKt")
+    workingDir = rootDir
+}
+
+tasks.register<JavaExec>("generateBunSymbolsIndex") {
+    group = "build"
+    description = "Regenerate bun-symbols.json.gz from vendored @types/bun .d.ts files (requires Node.js)."
+    classpath = sourceSets.getByName("main").runtimeClasspath
+    mainClass.set("com.cursivejssupport.tools.GenerateBunIndexKt")
+    workingDir = rootDir
+}
+
+tasks.register<JavaExec>("generateDenoSymbolsIndex") {
+    group = "build"
+    description = "Regenerate deno-symbols.json.gz from vendored lib.deno.ns.d.ts (requires Node.js)."
+    classpath = sourceSets.getByName("main").runtimeClasspath
+    mainClass.set("com.cursivejssupport.tools.GenerateDenoIndexKt")
+    workingDir = rootDir
+}
+
 tasks.register("npmInteropAudit") {
     group = "verification"
     description = "Compare npm completion, hover, signatures, members, and navigation data with TypeScript."

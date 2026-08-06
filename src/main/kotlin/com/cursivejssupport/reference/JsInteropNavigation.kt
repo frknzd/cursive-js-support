@@ -105,8 +105,19 @@ object JsInteropNavigation {
         val exportName = if (text.contains("/")) text.substringAfter("/") else null
 
         if (aliases.containsKey(namespace)) {
-            val packageName = aliases[namespace]!!.packageName
+            val binding = aliases[namespace]!!
+            val packageName = binding.packageName
             val anchorPath = file.virtualFile?.path
+            // Relative requires (`["./helper.js" :as helper]`) resolve to a physical .js file via
+            // RelativeModuleResolver; jump to the file (alias) or the named export (`helper/foo`).
+            if (binding.kind == com.cursivejssupport.npm.NpmBindingKind.RELATIVE) {
+                val npm = project.service<InteropSemanticService>()
+                if (exportName != null && exportName != namespace) {
+                    npm.exportDeclaration(file, packageName, exportName)?.let { return arrayOf(it) }
+                }
+                npm.exports(file, packageName).mapNotNull { it.declaration }.firstOrNull()?.let { return arrayOf(it) }
+                return null
+            }
             if (exportName != null && exportName != namespace) {
                 resolveNpmAliasExportOrMemberTargets(project, index, packageName, exportName, file)?.let { return it }
             } else {
@@ -409,10 +420,20 @@ object JsInteropNavigation {
             namespace != null -> {
                 val file = symbol.containingFile ?: return null
                 val aliases = NsAliasResolver.resolveAliases(file)
-                val pkg = aliases[namespace]?.packageName
+                val binding = aliases[namespace]
+                val pkg = binding?.packageName
                     ?: if (index.isKnownGoogNamespace(namespace)) namespace else null
                     ?: return null
                 val export = name ?: return null
+                // Relative require: resolve via the JS plugin's exported elements of the target file.
+                if (binding?.kind == com.cursivejssupport.npm.NpmBindingKind.RELATIVE) {
+                    val decl = symbol.project.service<InteropSemanticService>()
+                        .exportDeclaration(file, pkg, export) ?: return null
+                    return JsSymbolPsiElement(
+                        symbol.manager, symbol.language, export, null, null,
+                        packageName = pkg, npmExportName = export, navigationTarget = decl,
+                    )
+                }
                 if (index.isKnownNpmExport(pkg, export)) {
                     val anchorPath = file.virtualFile?.path
                     val phys = firstNpmExportPsi(project, index, pkg, export)

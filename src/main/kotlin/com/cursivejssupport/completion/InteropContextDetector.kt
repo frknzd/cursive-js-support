@@ -65,6 +65,11 @@ object InteropContextDetector {
                     prefix = slot.prefix,
                     replacementStart = slot.replacementStart,
                 )
+            is InteropNsRequireParser.Slot.RelativePackage ->
+                InteropCompletionContext.NsRequireRelativePackage(
+                    prefix = slot.prefix,
+                    replacementStart = slot.replacementStart,
+                )
             is InteropNsRequireParser.Slot.Keyword ->
                 InteropCompletionContext.NsRequireKeyword(
                     packageName = slot.packageName,

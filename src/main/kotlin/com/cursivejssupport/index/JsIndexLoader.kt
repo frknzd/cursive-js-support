@@ -44,6 +44,28 @@ object JsIndexLoader {
         }
     }
 
+    /**
+     * Load a bundled environment index (Node / Bun / Deno). These are pre-generated from
+     * `@types/node`, `@types/bun`, and `lib.deno.ns.d.ts`; ambient external modules are scoped
+     * into [ParsedSymbols.modules] and registered as packages, while their top-level globals
+     * (e.g. `process`, `Bun`, `Deno`) carry the matching [com.cursivejssupport.index.JsEnvironment]
+     * so per-file runtime-target filtering can hide them outside their environment.
+     */
+    private fun loadBundledEnvironment(index: JsSymbolIndex, resource: String, label: String) {
+        val stream = JsIndexLoader::class.java.getResourceAsStream(resource)
+            ?: run { log.warn("Cursive JS Support: $resource not found — skipping $label index"); return }
+        GZIPInputStream(stream).use { gz ->
+            val symbols = mapper.readValue<ParsedSymbols>(gz)
+            index.load(symbols)
+        }
+    }
+
+    fun loadBundledNode(index: JsSymbolIndex) = loadBundledEnvironment(index, "/js/node-symbols.json.gz", "Node.js")
+
+    fun loadBundledBun(index: JsSymbolIndex) = loadBundledEnvironment(index, "/js/bun-symbols.json.gz", "Bun")
+
+    fun loadBundledDeno(index: JsSymbolIndex) = loadBundledEnvironment(index, "/js/deno-symbols.json.gz", "Deno")
+
     fun loadNpmPackages(project: Project, index: JsSymbolIndex) {
         val settings = JsSupportSettings.getInstance().state
         val packages = project.service<NpmPackageResolver>().resolveAll()

@@ -142,4 +142,27 @@ class InteropNsRequireParserTest {
     fun `outside any require returns null`() {
         assertNull(parse("(defn foo [x] (.log js/console x))"))
     }
+
+    @Test
+    fun `relative package slot for dot prefix`() {
+        val slot = parse("(ns my.app (:require [\"./capture_util")
+        assertTrue(slot is InteropNsRequireParser.Slot.RelativePackage)
+        slot as InteropNsRequireParser.Slot.RelativePackage
+        assertEquals("./capture_util", slot.prefix)
+    }
+
+    @Test
+    fun `relative package slot for slash prefix`() {
+        val slot = parse("(ns my.app (:require [\"/scripts/helper")
+        assertTrue(slot is InteropNsRequireParser.Slot.RelativePackage)
+        slot as InteropNsRequireParser.Slot.RelativePackage
+        assertEquals("/scripts/helper", slot.prefix)
+    }
+
+    @Test
+    fun `absolute package name is not relative slot`() {
+        // "react" does not start with . or /, so it stays a regular Package slot.
+        val slot = parse("(ns my.app (:require [\"react")
+        assertTrue(slot is InteropNsRequireParser.Slot.Package)
+    }
 }

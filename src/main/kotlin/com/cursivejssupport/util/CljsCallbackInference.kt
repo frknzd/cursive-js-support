@@ -116,7 +116,7 @@ internal object CljsCallbackInference {
     ): TypeResolution? {
         val callbackArgument = children.indexOfFirst { it === fn } - 1
         val binding = head.containingFile?.let { CljsPsiTypeRules.npmBinding(it, head.text) }
-            ?.takeIf { it.kind in setOf(NpmBindingKind.REFER, NpmBindingKind.DEFAULT) } ?: return null
+            ?.takeIf { it.kind in setOf(NpmBindingKind.REFER, NpmBindingKind.DEFAULT, NpmBindingKind.RELATIVE) } ?: return null
         val descriptor = head.project.service<InteropSemanticService>()
             .exportType(head.containingFile, binding.packageName, binding.exportName ?: "default")
         val arguments = children.drop(1).map { argument ->

@@ -66,11 +66,16 @@ class InteropCompletionContributor : CompletionContributor() {
                 return
             }
 
+            if (context is InteropCompletionContext.NsRequireRelativePackage) {
+                emitRelativeFiles(context, file, result)
+                return
+            }
+
             val listAroundCaret = enclosingClList(parameters.position)
             InteropCompletionItems.emit(context, file, index, result, listAroundCaret)
         }
 
-        private fun emitNpmPackages(
+    private fun emitNpmPackages(
             context: InteropCompletionContext.NsRequirePackage,
             file: PsiFile,
             result: CompletionResultSet,
@@ -80,6 +85,17 @@ class InteropCompletionContributor : CompletionContributor() {
                 result.restartCompletionOnAnyPrefixChange()
             }
             InteropCompletionItems.emitNpmPackages(project.service<InteropSemanticService>().packages(file), result)
+        }
+
+    private fun emitRelativeFiles(
+            context: InteropCompletionContext.NsRequireRelativePackage,
+            file: PsiFile,
+            result: CompletionResultSet,
+        ) {
+            if (context.prefix.isEmpty()) {
+                result.restartCompletionOnAnyPrefixChange()
+            }
+            InteropCompletionItems.emitRelativeRequireFiles(file, context.prefix, result)
         }
 
         private fun enclosingClList(element: PsiElement?): ClList? {

@@ -26,6 +26,9 @@ class JsIndexCoordinator(
             try {
                 JsIndexLoader.loadBundledBrowser(replacement)
                 JsIndexLoader.loadBundledGoog(replacement)
+                JsIndexLoader.loadBundledNode(replacement)
+                JsIndexLoader.loadBundledBun(replacement)
+                JsIndexLoader.loadBundledDeno(replacement)
                 JsIndexLoader.loadNpmPackages(project, replacement)
                 index.publish(replacement)
                 model.markReady(replacement.indexedNpmPackageCount())

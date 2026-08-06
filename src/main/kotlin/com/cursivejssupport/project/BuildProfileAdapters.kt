@@ -7,6 +7,8 @@ class ShadowCljsBuildProfileAdapter : CljsBuildProfileAdapter {
         val config = File(projectRoot, "shadow-cljs.edn").takeIf { it.isFile } ?: return emptyList()
         val root = EdnBuildConfig.map(EdnBuildConfig.parse(config)) ?: return emptyList()
         val builds = EdnBuildConfig.map(EdnBuildConfig.value(root, "builds")) ?: return emptyList()
+        // shadow-cljs `:source-paths` lives at the top level and applies to every build.
+        val sourcePaths = EdnBuildConfig.stringList(EdnBuildConfig.value(root, "source-paths"))
         return builds.entries.mapNotNull { (rawId, rawBuild) ->
             val id = EdnBuildConfig.text(rawId) ?: return@mapNotNull null
             val build = EdnBuildConfig.map(rawBuild) ?: return@mapNotNull null
@@ -31,6 +33,7 @@ class ShadowCljsBuildProfileAdapter : CljsBuildProfileAdapter {
                 browserUrl = browserUrl,
                 inspectPort = if (target == CljsRuntimeTarget.NODE) 9229 else null,
                 configFile = config.absolutePath,
+                sourcePaths = sourcePaths,
             )
         }
     }
@@ -49,6 +52,7 @@ class CljsMainBuildProfileAdapter : CljsBuildProfileAdapter {
         val output = EdnBuildConfig.absolute(root, EdnBuildConfig.text(EdnBuildConfig.value(opts, "output-dir")))
         val outputTo = EdnBuildConfig.absolute(root, EdnBuildConfig.text(EdnBuildConfig.value(opts, "output-to")))
         val main = EdnBuildConfig.text(EdnBuildConfig.value(opts, "main"))
+        val sourcePaths = EdnBuildConfig.stringList(EdnBuildConfig.value(opts, "source-paths"))
         val id = config.name.removeSuffix(".cljs.edn").removeSuffix(".edn")
         return CljsBuildProfile(
             id = "cljs-main:$id",
@@ -72,6 +76,7 @@ class CljsMainBuildProfileAdapter : CljsBuildProfileAdapter {
             browserUrl = if (target == CljsRuntimeTarget.BROWSER) "http://localhost:9000" else null,
             inspectPort = if (target == CljsRuntimeTarget.NODE) 9229 else null,
             configFile = config.absolutePath,
+            sourcePaths = sourcePaths,
         )
     }
 }
@@ -85,6 +90,7 @@ class FigwheelMainBuildProfileAdapter : CljsBuildProfileAdapter {
             val target = if (targetName.contains("node")) CljsRuntimeTarget.NODE else CljsRuntimeTarget.BROWSER
             val id = config.name.removeSuffix(".cljs.edn")
             val output = EdnBuildConfig.absolute(projectRoot, EdnBuildConfig.text(EdnBuildConfig.value(opts, "output-dir")))
+            val sourcePaths = EdnBuildConfig.stringList(EdnBuildConfig.value(opts, "source-paths"))
             CljsBuildProfile(
                 id = "figwheel:$id",
                 displayName = "Figwheel Main $id",
@@ -100,6 +106,7 @@ class FigwheelMainBuildProfileAdapter : CljsBuildProfileAdapter {
                     listOf(SourceMapPathMapping(output, File(projectRoot, "src").absolutePath))
                 } else emptyList(),
                 configFile = config.absolutePath,
+                sourcePaths = sourcePaths,
             )
         }
     }

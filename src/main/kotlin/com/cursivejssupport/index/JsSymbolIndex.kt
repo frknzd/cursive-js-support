@@ -119,12 +119,18 @@ class JsSymbolIndex {
                     extends = (existing.extends + incoming.extends).distinct(),
                     members = merged,
                     typeParams = existing.typeParams.ifEmpty { incoming.typeParams },
+                    environment = existing.environment ?: incoming.environment,
                 )
             }
         }
         for ((name, info) in symbols.variables) builder.globals[name] = info
         for ((name, overloads) in symbols.functions) builder.functions.merge(name, overloads) { a, b -> a + b }
         for ((name, target) in symbols.aliases) builder.aliases.putIfAbsent(name, target)
+        // Ambient external modules (declare module "fs" {...}) are registered as packages so
+        // `(:require ["fs" :as fs])` resolves against the bundled Node/Bun/Deno symbol sets.
+        for ((moduleName, moduleSymbols) in symbols.modules) {
+            loadNpmPackage(moduleName, moduleSymbols)
+        }
         rebuildMemberSamples()
         if (published) snapshot.set(freeze())
     }
@@ -142,6 +148,7 @@ class JsSymbolIndex {
                         extends = (existing.extends + incoming.extends).distinct(),
                         members = merged,
                         typeParams = existing.typeParams.ifEmpty { incoming.typeParams },
+                        environment = existing.environment ?: incoming.environment,
                     )
                 }
             }
@@ -227,7 +234,7 @@ class JsSymbolIndex {
     }
 
     fun getNpmExportPsiElements(project: Project, packageName: String, exportName: String): Array<PsiElement>? {
-        val exportsMap = npmExports[packageName] ?: return null
+        val exportsMap = npmExportsFor(packageName) ?: return null
         
         if (exportsMap.containsKey(exportName)) {
             val location = exportsMap[exportName] ?: return null
@@ -421,7 +428,7 @@ class JsSymbolIndex {
 
     fun isConstructorGlobal(name: String): Boolean = globalConstructSignatures(name).isNotEmpty()
     fun isKnownNpmPackage(packageName: String): Boolean = npmExports.containsKey(packageName)
-    fun isKnownNpmExport(packageName: String, symbolName: String): Boolean = npmExports[packageName]?.containsKey(symbolName) == true
+    fun isKnownNpmExport(packageName: String, symbolName: String): Boolean = npmExportsFor(packageName)?.containsKey(symbolName) == true
     fun resolveGlobalType(name: String): String? = globals[name]?.type
     fun resolveInterface(typeName: String): JsInterface? = interfaces[typeName]
 
@@ -448,20 +455,28 @@ class JsSymbolIndex {
 
     fun allGlobalNames(): Collection<String> = globals.keys
     fun allFunctionNames(): Collection<String> = functions.keys
-    fun npmExportNames(packageName: String): Collection<String> = npmExports[packageName]?.keys ?: emptySet()
+
+    /**
+     * Look up a package's exports map, trying the name as-is and then the `node:`-stripped form
+     * so `node:fs` and `fs` resolve to the same bundled ambient module.
+     */
+    private fun npmExportsFor(packageName: String): Map<String, JsLocation?>? =
+        npmExports[packageName] ?: npmExports[packageName.removePrefix("node:")]
+
+    fun npmExportNames(packageName: String): Collection<String> = npmExportsFor(packageName)?.keys ?: emptySet()
     fun indexedNpmPackageCount(): Int = npmExports.keys.count { it != "goog" && !it.startsWith("goog.") }
 
     /** TypeScript type for an npm export (e.g. `default` → `React.ComponentType`), if known from typings. */
     fun resolveNpmExportType(packageName: String, exportName: String): String? =
-        npmExportTypes[packageName]?.get(exportName)
+        npmExportTypes[packageName]?.get(exportName) ?: npmExportTypes[packageName.removePrefix("node:")]?.get(exportName)
 
     /** Function overloads for a function-shaped npm/goog export, if the typings carried them. */
     fun resolveNpmExportMembers(packageName: String, exportName: String): List<JsMember>? =
-        npmExportMembers[packageName]?.get(exportName)
+        npmExportMembers[packageName]?.get(exportName) ?: npmExportMembers[packageName.removePrefix("node:")]?.get(exportName)
 
     /** JSDoc attached to an npm/goog export's declaration. */
     fun resolveNpmExportDoc(packageName: String, exportName: String): String? =
-        npmExportDocs[packageName]?.get(exportName)
+        npmExportDocs[packageName]?.get(exportName) ?: npmExportDocs[packageName.removePrefix("node:")]?.get(exportName)
     fun hasMemberName(memberName: String): Boolean = memberSamples.containsKey(memberName)
 
     fun getGoogNamespaceNames(): List<String> =

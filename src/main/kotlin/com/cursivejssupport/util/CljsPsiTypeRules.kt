@@ -35,8 +35,8 @@ internal object CljsPsiTypeRules {
         val alias = symbol.substringBefore('/', missingDelimiterValue = "")
         val export = symbol.substringAfter('/', missingDelimiterValue = "")
         if (alias.isEmpty() || export.isEmpty()) return null
-        val namespace = bindings[alias]?.takeIf { it.kind in setOf(NpmBindingKind.AS, NpmBindingKind.ALL) } ?: return null
-        return NpmBinding(namespace.packageName, NpmBindingKind.REFER, export)
+        val namespace = bindings[alias]?.takeIf { it.kind in setOf(NpmBindingKind.AS, NpmBindingKind.ALL, NpmBindingKind.RELATIVE) } ?: return null
+        return NpmBinding(namespace.packageName, NpmBindingKind.REFER, export, relativeFilePath = namespace.relativeFilePath)
     }
 
     fun destructuredBindingType(

@@ -103,7 +103,7 @@ open class JsInteropInspection : LocalInspectionTool() {
             NpmBindingKind.DEFAULT -> if (!semantics.hasExport(symbol.containingFile, binding.packageName, "default")) {
                 holder.registerProblem(symbol, "Package '${binding.packageName}' has no default export", ProblemHighlightType.GENERIC_ERROR_OR_WARNING)
             }
-            NpmBindingKind.AS, NpmBindingKind.ALL -> if (availableNames.isEmpty()) {
+            NpmBindingKind.AS, NpmBindingKind.ALL, NpmBindingKind.RELATIVE -> if (availableNames.isEmpty()) {
                 holder.registerProblem(symbol, "No TypeScript declarations found for '${binding.packageName}'", ProblemHighlightType.WEAK_WARNING)
             }
         }
@@ -179,7 +179,7 @@ open class JsInteropInspection : LocalInspectionTool() {
         val namespace = symbol.namespace ?: return
         val semantics = symbol.project.service<InteropSemanticService>()
         val binding = semantics.bindings(symbol.containingFile)[namespace] ?: return
-        if (binding.kind !in setOf(NpmBindingKind.AS, NpmBindingKind.ALL)) return
+        if (binding.kind !in setOf(NpmBindingKind.AS, NpmBindingKind.ALL, NpmBindingKind.RELATIVE)) return
         val exportName = symbol.name?.substringBefore('.') ?: return
         if (exportName.isBlank()) return
         val names = semantics.exportNames(symbol.containingFile, binding.packageName)

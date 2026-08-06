@@ -28,6 +28,21 @@ internal object EdnBuildConfig {
         else -> null
     }
 
+    fun stringList(value: Any?): List<String> {
+        val iter = when (value) {
+            is Iterable<*> -> value.iterator()
+            is Array<*> -> value.iterator()
+            else -> return emptyList()
+        }
+        val out = mutableListOf<String>()
+        while (iter.hasNext()) {
+            val v = iter.next()
+            val s = text(v) ?: continue
+            out.add(s)
+        }
+        return out
+    }
+
     fun absolute(root: File, path: String?): String? = path?.let {
         File(it).let { file -> if (file.isAbsolute) file else File(root, it) }.normalize().absolutePath
     }

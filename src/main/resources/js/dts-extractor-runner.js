@@ -7,9 +7,10 @@ function extractSymbols(filesJson) {
     var payload = JSON.parse(filesJson);
     var files = payload.files || payload;
     var roots = payload.roots || Object.keys(files);
+    var environment = payload.environment || 'common';
     var rootSet = Object.create(null);
     roots.forEach(function (root) { rootSet[root] = true; });
-    var result = { interfaces: Object.create(null), variables: Object.create(null), functions: Object.create(null), aliases: Object.create(null), moduleExports: null };
+    var result = { interfaces: Object.create(null), variables: Object.create(null), functions: Object.create(null), aliases: Object.create(null), moduleExports: null, modules: Object.create(null), environment: environment, namePrefix: '', nameRemap: null };
     for (var filename in files) {
         if (!Object.prototype.hasOwnProperty.call(files, filename)) continue;
         var sourceFile = ts.createSourceFile(filename, files[filename], ts.ScriptTarget.Latest, true);
@@ -35,7 +36,7 @@ function extractSymbols(filesJson) {
         if (topLevelCount > 5) {
             var syntheticName = 'MODULE$Members';
             if (!result.interfaces[syntheticName]) {
-                result.interfaces[syntheticName] = { location: null, extends: [], members: Object.create(null) };
+                result.interfaces[syntheticName] = { location: null, extends: [], members: Object.create(null), environment: result.environment || 'common' };
                 for (var f in result.functions) result.interfaces[syntheticName].members[f] = result.functions[f];
                 for (var v in result.variables) {
                     if (v === 'default') continue;
@@ -176,7 +177,8 @@ function addCheckedExport(exportName, symbol, checker, result, seen, fallbackDec
     result.variables[exportName] = {
         type: existingNominal ? existing.type : (display || 'unknown'),
         doc: documentation || (existing && existing.doc) || null,
-        location: checkedLocation(declaration)
+        location: checkedLocation(declaration),
+        environment: result.environment || 'common'
     };
     if (calls.length > 0) {
         var checkedCalls = calls.map(function (signature) {
@@ -195,7 +197,7 @@ function isTypeOnlyExport(symbol) {
 function addCheckedInterface(name, type, checker, result, declaration, depth) {
     var iface = result.interfaces[name];
     if (!iface) {
-        iface = { location: checkedLocation(declaration), extends: [], typeParams: [], members: Object.create(null) };
+        iface = { location: checkedLocation(declaration), extends: [], typeParams: [], members: Object.create(null), environment: result.environment || 'common' };
         result.interfaces[name] = iface;
     }
 
@@ -377,7 +379,8 @@ function visitStatements(statements, result, filename, sourceFile) {
                 if (node.name && node.name.text) {
                     result.variables[node.name.text] = {
                         type: 'default',
-                        location: getLocation(node.name, filename, sourceFile)
+                        location: getLocation(node.name, filename, sourceFile),
+                        environment: result.environment || 'common'
                     };
                 }
                 break;
@@ -387,6 +390,7 @@ function visitStatements(statements, result, filename, sourceFile) {
 
 function collectExportDefaultDeclaration(node, result, filename, sourceFile) {
     var decl = node.declaration;
+    var env = result.environment || 'common';
     if (decl) {
         var name = decl.name ? decl.name.text : null;
         if (name) {
@@ -397,13 +401,15 @@ function collectExportDefaultDeclaration(node, result, filename, sourceFile) {
             result.variables['default'] = {
                 type: type,
                 doc: jsDocText(node, sourceFile),
-                location: getLocation(decl.name, filename, sourceFile)
+                location: getLocation(decl.name, filename, sourceFile),
+                environment: env
             };
         } else {
             result.variables['default'] = {
                 type: 'any',
                 doc: jsDocText(node, sourceFile),
-                location: getLocation(node, filename, sourceFile)
+                location: getLocation(node, filename, sourceFile),
+                environment: env
             };
         }
         return;
@@ -413,17 +419,20 @@ function collectExportDefaultDeclaration(node, result, filename, sourceFile) {
     result.variables['default'] = {
         type: typeName(expr, result),
         doc: jsDocText(node, sourceFile),
-        location: getLocation(expr, filename, sourceFile)
+        location: getLocation(expr, filename, sourceFile),
+        environment: env
     };
 }
 
 function collectExportAssignment(node, result, filename, sourceFile) {
+    var env = result.environment || 'common';
     if (node.isExportEquals) {
         var type = typeName(node.expression, result);
         result.variables['default'] = {
             type: type,
             doc: jsDocText(node, sourceFile),
-            location: getLocation(node.expression, filename, sourceFile)
+            location: getLocation(node.expression, filename, sourceFile),
+            environment: env
         };
     } else {
         collectExportDefaultExpression(node, result, filename, sourceFile);
@@ -436,26 +445,54 @@ function collectExportDefaultExpression(node, result, filename, sourceFile) {
     result.variables['default'] = {
         type: typeName(expr, result),
         doc: jsDocText(node, sourceFile),
-        location: getLocation(expr, filename, sourceFile)
+        location: getLocation(expr, filename, sourceFile),
+        environment: result.environment || 'common'
     };
 }
 
 function collectModuleDeclaration(node, result, filename, sourceFile) {
     if (node.name && node.name.text) {
         var name = node.name.text;
-        // Ambient module: declare module "react-dom" { ... }
+        // Ambient external module: declare module "fs" { ... }
+        // Collected into a scoped sub-result keyed under result.modules so the Kotlin
+        // loader can register it as a "package" (loadNpmPackage). Interface names are
+        // prefixed with MODULE$<module>$ to avoid colliding with the browser index.
         if (node.name.kind === ts.SyntaxKind.StringLiteral) {
             if (node.body && node.body.statements) {
-                visitStatements(node.body.statements, result, filename, sourceFile);
+                var safeName = name.replace(/[^A-Za-z0-9_$]/g, '_');
+                var prefix = 'MODULE$' + safeName + '$';
+                var scoped = {
+                    interfaces: Object.create(null),
+                    variables: Object.create(null),
+                    functions: Object.create(null),
+                    aliases: result.aliases,
+                    moduleExports: null,
+                    modules: Object.create(null),
+                    environment: result.environment,
+                    namePrefix: prefix,
+                    nameRemap: Object.create(null)
+                };
+                visitStatements(node.body.statements, scoped, filename, sourceFile);
+                if (!result.modules) result.modules = Object.create(null);
+                result.modules[name] = scoped;
             }
             return;
         }
 
         var ifaceName = 'NAMESPACE$' + name;
-        if (!Object.prototype.hasOwnProperty.call(result.interfaces, ifaceName)) {
-            result.interfaces[ifaceName] = { location: getLocation(node, filename, sourceFile), extends: [], members: Object.create(null) };
+        // `declare global { … }` augments the global scope rather than introducing a namespace
+        // member interface: hoist its declarations straight into the enclosing result so that
+        // globals like `process` (Node) are addressable as `js/process`.
+        if (name === 'global') {
+            if (node.body && node.body.statements) {
+                visitStatements(node.body.statements, result, filename, sourceFile);
+            }
+            return;
         }
-        var subResult = { interfaces: result.interfaces, variables: Object.create(null), functions: Object.create(null), aliases: result.aliases };
+        if (!Object.prototype.hasOwnProperty.call(result.interfaces, ifaceName)) {
+            result.interfaces[ifaceName] = { location: getLocation(node, filename, sourceFile), extends: [], members: Object.create(null), environment: result.environment };
+        }
+        var subResult = { interfaces: result.interfaces, variables: Object.create(null), functions: Object.create(null), aliases: result.aliases, environment: result.environment, namePrefix: '', nameRemap: null };
         if (node.body && node.body.statements) {
             visitStatements(node.body.statements, subResult, filename, sourceFile);
         }
@@ -467,12 +504,13 @@ function collectModuleDeclaration(node, result, filename, sourceFile) {
         for (var f in subResult.functions) {
             iface.members[f] = subResult.functions[f];
         }
-        result.variables[name] = { type: ifaceName, doc: jsDocText(node, sourceFile), location: getLocation(node, filename, sourceFile) };
+        result.variables[name] = { type: ifaceName, doc: jsDocText(node, sourceFile), location: getLocation(node, filename, sourceFile), environment: result.environment };
     }
 }
 
 function collectExportDeclaration(node, result, filename, sourceFile) {
     if (node.exportClause && node.exportClause.elements) {
+        var env = result.environment || 'common';
         node.exportClause.elements.forEach(function (e) {
             var exportedName = e.name.text;
             var localName = e.propertyName ? e.propertyName.text : exportedName;
@@ -482,7 +520,8 @@ function collectExportDeclaration(node, result, filename, sourceFile) {
             }
             result.variables[exportedName] = {
                 type: type,
-                location: getLocation(e.name, filename, sourceFile)
+                location: getLocation(e.name, filename, sourceFile),
+                environment: env
             };
         });
     }
@@ -490,11 +529,19 @@ function collectExportDeclaration(node, result, filename, sourceFile) {
 
 function mergeInterface(node, result, filename, sourceFile) {
     if (!node.name || !node.name.text) return;
-    var name = node.name.text;
+    var originalName = node.name.text;
     var isClass = node.kind === ts.SyntaxKind.ClassDeclaration;
+    // Ambient-module scoping: prefix interface names so they don't collide with the
+    // browser index. The remap lets typeName() resolve bare references inside the
+    // module body to the prefixed interface.
+    var prefix = result.namePrefix || '';
+    var remap = result.nameRemap;
+    var name = prefix ? prefix + originalName : originalName;
+    if (prefix && remap && !remap[originalName]) remap[originalName] = name;
+    var env = result.environment || 'common';
 
     if (!Object.prototype.hasOwnProperty.call(result.interfaces, name)) {
-        result.interfaces[name] = { location: getLocation(node, filename, sourceFile), extends: [], typeParams: [], members: Object.create(null) };
+        result.interfaces[name] = { location: getLocation(node, filename, sourceFile), extends: [], typeParams: [], members: Object.create(null), environment: env };
     }
     var iface = result.interfaces[name];
     if (node.typeParameters && node.typeParameters.length > 0 && (!iface.typeParams || iface.typeParams.length === 0)) {
@@ -504,13 +551,14 @@ function mergeInterface(node, result, filename, sourceFile) {
     }
     var bases = extractHeritageNames(node);
     for (var b = 0; b < bases.length; b++) {
-        if (iface.extends.indexOf(bases[b]) < 0) iface.extends.push(bases[b]);
+        var baseName = (remap && remap[bases[b]]) ? remap[bases[b]] : bases[b];
+        if (iface.extends.indexOf(baseName) < 0) iface.extends.push(baseName);
     }
 
     var staticIfaceName = isClass ? 'TYPE$' + name + '$Static' : null;
     if (staticIfaceName && !Object.prototype.hasOwnProperty.call(result.interfaces, staticIfaceName)) {
-        result.interfaces[staticIfaceName] = { location: getLocation(node, filename, sourceFile), extends: [], members: Object.create(null) };
-        result.variables[name] = { type: staticIfaceName, location: getLocation(node.name, filename, sourceFile) };
+        result.interfaces[staticIfaceName] = { location: getLocation(node, filename, sourceFile), extends: [], members: Object.create(null), environment: env };
+        result.variables[originalName] = { type: staticIfaceName, location: getLocation(node.name, filename, sourceFile), environment: env };
     }
 
     var members = iface.members;
@@ -632,16 +680,17 @@ function extractHeritageNames(node) {
 
 function collectVariables(node, result, filename, sourceFile) {
     var decls = node.declarationList.declarations;
+    var env = result.environment || 'common';
     for (var i = 0; i < decls.length; i++) {
         var d = decls[i];
         if (d.name && d.name.text) {
             var name = d.name.text;
             var typ = typeName(d.type, result);
             if (d.type && d.type.kind === ts.SyntaxKind.TypeLiteral) {
-                typ = 'TYPE$' + name;
+                typ = 'TYPE$' + (result.namePrefix || '') + name;
                 mergeInterface({ name: { text: typ }, members: d.type.members }, result, filename, sourceFile);
             }
-            result.variables[name] = { type: typ, doc: jsDocText(d, sourceFile), location: getLocation(d, filename, sourceFile) };
+            result.variables[name] = { type: typ, doc: jsDocText(d, sourceFile), location: getLocation(d, filename, sourceFile), environment: env };
         }
     }
 }
@@ -649,20 +698,25 @@ function collectVariables(node, result, filename, sourceFile) {
 function collectFunction(node, result, filename, sourceFile) {
     if (!node.name) return;
     var name = node.name.text;
+    var env = result.environment || 'common';
     if (!Object.prototype.hasOwnProperty.call(result.functions, name)) result.functions[name] = [];
-    result.functions[name].push({ kind: 'method', params: extractParams(node.parameters, result), returns: typeName(node.type, result), doc: jsDocText(node, sourceFile), location: getLocation(node, filename, sourceFile) });
+    result.functions[name].push({ kind: 'method', params: extractParams(node.parameters, result), returns: typeName(node.type, result), doc: jsDocText(node, sourceFile), location: getLocation(node, filename, sourceFile), environment: env });
 }
 
 function collectTypeAlias(node, result, filename, sourceFile) {
     if (!node.name || !node.name.text) return;
-    var name = node.name.text;
+    var originalName = node.name.text;
     var type = node.type;
     if (!type) return;
+    var prefix = result.namePrefix || '';
+    var name = prefix ? prefix + originalName : originalName;
+    if (result.nameRemap && prefix && !result.nameRemap[originalName]) result.nameRemap[originalName] = name;
+    var env = result.environment || 'common';
     if (Object.prototype.hasOwnProperty.call(result.interfaces, name)) return; // real interface wins
 
     if (type.kind === ts.SyntaxKind.TypeLiteral) {
         // type Foo = { ... } — treat as an inline interface
-        mergeInterface({ name: { text: name }, members: type.members, heritageClauses: null }, result, filename, sourceFile);
+        mergeInterface({ name: { text: originalName }, members: type.members, heritageClauses: null }, result, filename, sourceFile);
     } else if (type.kind === ts.SyntaxKind.TypeReference) {
         // type Foo = Bar — create a transparent alias interface that extends Bar
         var baseType = typeName(type, result);
@@ -671,7 +725,8 @@ function collectTypeAlias(node, result, filename, sourceFile) {
                 location: getLocation(node, filename, sourceFile),
                 extends: [baseType],
                 typeParams: node.typeParameters ? node.typeParameters.map(function (tp) { return tp.name.text; }) : [],
-                members: Object.create(null)
+                members: Object.create(null),
+                environment: env
             };
         }
     }
@@ -685,16 +740,18 @@ function collectTypeAlias(node, result, filename, sourceFile) {
                     kind: 'method',
                     params: extractParams(type.parameters, result),
                     returns: typeName(type.type, result),
-                    location: getLocation(type, filename, sourceFile)
+                    location: getLocation(type, filename, sourceFile),
+                    environment: env
                 }]
-            }
+            },
+            environment: env
         };
     }
     else if (type.kind === ts.SyntaxKind.UnionType || type.kind === ts.SyntaxKind.IntersectionType) {
         // Union/intersection aliases (e.g. type BodyInit = Blob | string) can't become a single
         // interface; record the raw shape so the Kotlin side can expand them per-branch.
         if (result.aliases) {
-            result.aliases[name] = typeName(type, result);
+            result.aliases[originalName] = typeName(type, result);
         }
     }
 }
@@ -747,6 +804,11 @@ function typeName(node, result, depth) {
             } else {
                 refName = node.typeName.text || 'unknown';
             }
+            // Ambient-module remap: resolve bare references inside the module body to the
+            // prefixed interface so member resolution finds the scoped declaration.
+            if (result && result.nameRemap && result.nameRemap[refName]) {
+                refName = result.nameRemap[refName];
+            }
             // Keep generic instantiations (`Promise<Response>`, `NodeListOf<E>`) — the Kotlin
             // side parses the string form back into a structured type. Depth-capped to keep
             // pathological nested generics bounded.
@@ -785,9 +847,12 @@ function typeName(node, result, depth) {
         case ts.SyntaxKind.MappedType: return 'object';    // { [K in T]: V }
         case ts.SyntaxKind.Identifier:
             var name = node.text;
+            if (result && result.nameRemap && result.nameRemap[name]) {
+                return result.nameRemap[name];
+            }
             if (result && result.variables[name]) {
                 var vt = result.variables[name].type;
-                if (vt.startsWith('TYPE$') || vt.startsWith('NAMESPACE$')) return vt;
+                if (vt.startsWith('TYPE$') || vt.startsWith('NAMESPACE$') || vt.startsWith('MODULE$')) return vt;
             }
             return name;
         default: return 'any';

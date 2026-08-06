@@ -29,6 +29,16 @@ object InteropNsRequireParser {
             override val replacementStart: Int,
         ) : Slot
 
+        /**
+         * Inside a relative-path package string literal `["./<partial>"]` or `["/<partial>"]`. Completion
+         * lists `.js`/`.mjs`/`.cjs` files under the build's source paths (and next to the requiring
+         * file) matching the prefix, mirroring shadow-cljs relative JS requires.
+         */
+        data class RelativePackage(
+            override val prefix: String,
+            override val replacementStart: Int,
+        ) : Slot
+
         /** Right after `["pkg"` waiting for an option keyword (`:as`, `:refer`, …). */
         data class Keyword(
             val packageName: String,
@@ -75,10 +85,13 @@ object InteropNsRequireParser {
             // Confirm the string starts inside the same `[` (require spec).
             if (opening < openVec.offset) return null
             val inner = text.substring(opening + 1, viewCaret).stripCompletionDummy()
-            return Slot.Package(
-                prefix = inner,
-                replacementStart = opening + 1 + scanStart,
-            )
+            // Relative JS requires (`./foo.js`, `/abs/path.js`) get file-path completion, not npm package completion.
+            val slot: Slot = if (inner.startsWith(".") || inner.startsWith("/")) {
+                Slot.RelativePackage(prefix = inner, replacementStart = opening + 1 + scanStart)
+            } else {
+                Slot.Package(prefix = inner, replacementStart = opening + 1 + scanStart)
+            }
+            return slot
         }
 
         // Identifier-style partial right of the last non-token char.

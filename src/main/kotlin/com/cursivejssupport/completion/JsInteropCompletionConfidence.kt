@@ -46,7 +46,8 @@ class JsInteropCompletionConfidence : CompletionConfidence() {
         val ctx = InteropContextDetector.detect(doc.charsSequence, end, aliases, googNs)
         if (ctx !is InteropCompletionContext.None) {
             // Special handling for require package strings: always allow autopopup
-            if (ctx is InteropCompletionContext.NsRequirePackage) return ThreeState.NO
+            if (ctx is InteropCompletionContext.NsRequirePackage ||
+                ctx is InteropCompletionContext.NsRequireRelativePackage) return ThreeState.NO
             return ThreeState.NO
         }
 

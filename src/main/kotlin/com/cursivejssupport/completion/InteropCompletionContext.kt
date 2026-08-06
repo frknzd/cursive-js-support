@@ -57,6 +57,16 @@ sealed interface InteropCompletionContext {
         override val replacementStart: Int,
     ) : InteropCompletionContext
 
+    /**
+     * Inside a relative-path require string `["./<partial>"]` or `["/<partial>"]` — suggest
+     * `.js`/`.mjs`/`.cjs` files under the build's source paths (and next to the requiring file)
+     * matching [prefix], mirroring shadow-cljs relative JS imports.
+     */
+    data class NsRequireRelativePackage(
+        override val prefix: String,
+        override val replacementStart: Int,
+    ) : InteropCompletionContext
+
     /** Inside `[goog.<partial>]` in `(:require ...)` — suggest known goog namespace names. */
     data class GoogNamespaceRequire(
         override val prefix: String,

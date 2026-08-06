@@ -74,32 +74,41 @@ class NpmPackageResolver(
 
         val names = mutableSetOf<String>()
         val roots = candidateNpmDiscoveryRoots(anchorFilePath)
+        var hasCljsOrNpmSignal = false
         for (root in roots) {
-            File(root, "package.json").takeIf { it.exists() }?.let { f -> names += parsePackageJson(f) }
-            collectWorkspacePackageJsonFiles(root).forEach { f -> names += parsePackageJson(f) }
+            File(root, "package.json").takeIf { it.exists() }?.let { f -> names += parsePackageJson(f); hasCljsOrNpmSignal = true }
+            collectWorkspacePackageJsonFiles(root).forEach { f -> names += parsePackageJson(f); hasCljsOrNpmSignal = true }
             File(root, "shadow-cljs.edn").takeIf { it.exists() }?.let { f ->
-                names += ShadowNpmDepsParser.collectNpmDepPackageNames(f)
+                names += ShadowNpmDepsParser.collectNpmDepPackageNames(f); hasCljsOrNpmSignal = true
             }
             if (settings.scanLockfileTransitive) {
-                File(root, "package-lock.json").takeIf { it.exists() }?.let { names += parsePackageLockJson(it) }
+                File(root, "package-lock.json").takeIf { it.exists() }?.let { names += parsePackageLockJson(it); hasCljsOrNpmSignal = true }
             }
-            
+
             // Also include anything physically present in node_modules as a fallback
             val nm = File(root, "node_modules")
             if (nm.isDirectory) {
                 names += listInstalledPackages(nm)
                 names += discoverExportSubpaths(nm, names.toList())
+                hasCljsOrNpmSignal = true
             }
         }
-        
+
         // Include packages from IDE internal cache
         System.getProperty("idea.system.path")?.let { systemDir ->
             val cache = File(systemDir, "javascript/typings")
             if (cache.isDirectory) {
-                cache.listFiles()?.filter { it.isDirectory && !it.name.startsWith(".") }?.forEach { 
-                    names += it.name 
+                cache.listFiles()?.filter { it.isDirectory && !it.name.startsWith(".") }?.forEach {
+                    names += it.name
                 }
             }
+        }
+
+        // Node/Bun built-in modules are only offered when the project looks like a ClojureScript
+        // project (shadow-cljs.edn / package.json / node_modules present); their types come from
+        // the bundled node/bun symbol indexes, not node_modules.
+        if (hasCljsOrNpmSignal) {
+            names += JsBuiltInModules.allRequireStrings
         }
 
         val result = names.filter { !it.startsWith("@types/") }.toSet()

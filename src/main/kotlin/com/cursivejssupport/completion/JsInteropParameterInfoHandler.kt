@@ -88,7 +88,7 @@ class JsInteropParameterInfoHandler : ParameterInfoHandler<PsiElement, JsMember>
         }
         val semantics = list.project.service<InteropSemanticService>()
         val binding = CljsPsiTypeRules.npmBinding(list.containingFile, text)
-        if (binding != null && binding.kind in setOf(NpmBindingKind.REFER, NpmBindingKind.DEFAULT)) {
+        if (binding != null && binding.kind in setOf(NpmBindingKind.REFER, NpmBindingKind.DEFAULT, NpmBindingKind.RELATIVE)) {
             val descriptor = semantics.exportType(
                 list.containingFile, binding.packageName, binding.exportName ?: "default",
             )
