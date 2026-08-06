@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [1.5.0]
+
 ### Added
 - Node.js, Bun, and Deno built-in APIs are now indexed and offered alongside the browser
   globals. `["fs" :as fs]`, `["path" :as path]`, `["node:fs/promises" :as fs-promises]`, and
