@@ -4,6 +4,39 @@
 
 ## [Unreleased]
 
+### Fixed
+- Indexing no longer wedges for the rest of the session when a stage throws an `Error` rather than
+  an `Exception`. `JsIndexCoordinator` caught `Exception`, so a linkage error (most plausibly
+  `NoClassDefFoundError: us/bpsm/edn/parser/Parsers` from a plugin installed as the bare composed
+  jar) escaped the coroutine, left `claimLoad` held, and left every interop symbol unresolved
+  behind an "Unhandled exception" report. Both the coordinator and `JsNpmDependencyWatcher` now
+  catch `Throwable` (re-throwing `CancellationException`) and report the exception type alongside
+  its message.
+- Node, Bun, and Deno symbols no longer disappear mid-session. `JsNpmDependencyWatcher` rebuilt the
+  index from the browser and goog sets only and then `publish`ed it over the live one, so the first
+  `package.json` / `node_modules` / `shadow-cljs.edn` change after startup took `js/process` and the
+  `fs` / `path` module exports away. Both the initial load and the re-index now go through
+  `JsIndexLoader.loadAllBundled`.
+- `path/join`, `path/dirname`, and the rest of the export-assignment built-ins resolve.
+  `@types/node` declares these modules as `const path: path.PlatformPath; export = path`, so the
+  module's whole API lives on the type of one object rather than in named exports; those members
+  are now registered as exports of the bundled ambient modules. Packages resolved from
+  `node_modules` are unaffected and keep the exports TypeScript reports for them.
+- shadow-cljs builds are found in monorepo modules, not just at the project root. A project opened
+  above `<module>/shadow-cljs.edn` previously discovered no build profiles at all, which left
+  relative-require resolution without source paths and every file without a runtime target.
+  Each config's paths resolve against its own directory, and its build ids are qualified by the
+  module so two modules can both declare `:app`. Build-config discovery also stops descending into
+  `node_modules`, `target`, `out`, and `.shadow-cljs`.
+- A failure while reading npm typings no longer costs the bundled index. The browser, Node, Bun,
+  and Deno symbols are published even when the npm stage fails, so `js/*` interop keeps working in
+  a project whose `shadow-cljs.edn`, `node_modules`, or Node executable cannot be read.
+
+### Changed
+- README now documents installing the ZIP from `build/distributions/`. It previously said to
+  install the composed jar from `build/libs/`, which holds none of the plugin's third-party
+  libraries — they ship in the ZIP's `lib/` directory.
+
 ## [1.5.0]
 
 ### Added

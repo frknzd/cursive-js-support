@@ -3,8 +3,33 @@ package com.cursivejssupport.project
 import java.io.File
 
 class ShadowCljsBuildProfileAdapter : CljsBuildProfileAdapter {
-    override fun discover(projectRoot: File): List<CljsBuildProfile> {
-        val config = File(projectRoot, "shadow-cljs.edn").takeIf { it.isFile } ?: return emptyList()
+    override fun discover(projectRoot: File): List<CljsBuildProfile> =
+        shadowConfigFiles(projectRoot).flatMap { config ->
+            // The root config keeps the unqualified `shadow:<build>` id it has always had; a
+            // module's config qualifies its ids so two modules declaring `:app` both survive
+            // the `distinctBy { it.id }` in CljsProjectModel.
+            discoverIn(config, qualifier = config.parentFile?.takeIf { it != projectRoot }?.name)
+        }
+
+    /**
+     * `shadow-cljs.edn` at the project root, plus one per module in a monorepo. shadow-cljs
+     * resolves every path in a config against that config's own directory, so each file yields
+     * its own profiles rather than being merged into the root's.
+     */
+    private fun shadowConfigFiles(projectRoot: File): List<File> {
+        val root = File(projectRoot, "shadow-cljs.edn").takeIf { it.isFile }
+        val nested = projectRoot.walkTopDown()
+            .maxDepth(SEARCH_DEPTH)
+            .onEnter { it == projectRoot || it.name !in SKIPPED_DIRECTORIES }
+            .filter { it.isFile && it.name == "shadow-cljs.edn" && it != root }
+            .sortedBy { it.path }
+        return listOfNotNull(root) + nested
+    }
+
+    private fun discoverIn(config: File, qualifier: String?): List<CljsBuildProfile> {
+        // Every relative path in the config — `:source-paths`, `:output-to` — is relative to the
+        // directory holding it, which is the project root only for a single-module project.
+        val projectRoot = config.parentFile ?: return emptyList()
         val root = EdnBuildConfig.map(EdnBuildConfig.parse(config)) ?: return emptyList()
         val builds = EdnBuildConfig.map(EdnBuildConfig.value(root, "builds")) ?: return emptyList()
         // shadow-cljs `:source-paths` lives at the top level and applies to every build.
@@ -22,8 +47,8 @@ class ShadowCljsBuildProfileAdapter : CljsBuildProfileAdapter {
             val browserUrl = EdnBuildConfig.text(EdnBuildConfig.value(devtools, "open-url"))
                 ?: httpPort?.let { "http://localhost:$it" }
             CljsBuildProfile(
-                id = "shadow:$id",
-                displayName = "shadow-cljs $id",
+                id = if (qualifier == null) "shadow:$id" else "shadow:$qualifier:$id",
+                displayName = if (qualifier == null) "shadow-cljs $id" else "shadow-cljs $qualifier $id",
                 tool = CljsBuildTool.SHADOW_CLJS,
                 target = target,
                 workingDirectory = projectRoot.absolutePath,
@@ -112,8 +137,20 @@ class FigwheelMainBuildProfileAdapter : CljsBuildProfileAdapter {
     }
 }
 
+/** How far below the project root a build config is looked for — deep enough for one monorepo
+ *  module level plus its own nesting, shallow enough not to walk a whole source tree. */
+internal const val SEARCH_DEPTH = 3
+
+/** Directories that never hold a hand-written build config and are expensive to walk. */
+internal val SKIPPED_DIRECTORIES = setOf("node_modules", "target", "out", ".git", ".shadow-cljs", ".idea")
+
 private fun cljsBuildFiles(root: File): List<File> =
-    root.walkTopDown().maxDepth(3).filter { it.isFile && it.name.endsWith(".cljs.edn") }.toList().sortedBy { it.path }
+    root.walkTopDown()
+        .maxDepth(SEARCH_DEPTH)
+        .onEnter { it == root || it.name !in SKIPPED_DIRECTORIES }
+        .filter { it.isFile && it.name.endsWith(".cljs.edn") }
+        .toList()
+        .sortedBy { it.path }
 
 private fun isFigwheelProject(root: File): Boolean {
     if (File(root, "figwheel-main.edn").isFile) return true

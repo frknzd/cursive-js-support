@@ -63,13 +63,15 @@ class JsNpmDependencyWatcher(private val project: Project) : Disposable {
             try {
                 val current = JsSymbolIndex.getInstance(project)
                 val replacement = JsSymbolIndex()
-                JsIndexLoader.loadBundledBrowser(replacement)
-                JsIndexLoader.loadBundledGoog(replacement)
+                JsIndexLoader.loadAllBundled(replacement)
                 JsIndexLoader.loadNpmPackages(project, replacement)
                 current.publish(replacement)
                 model.markReady(replacement.indexedNpmPackageCount())
-            } catch (e: Exception) {
-                model.markFailed(e.message ?: e.javaClass.simpleName)
+            } catch (e: Throwable) {
+                // Throwable for the same reason as in JsIndexCoordinator: a linkage error here is
+                // an Error, and letting it out of a pooled-executor task only loses the reason.
+                model.markFailed(e.message?.takeIf { it.isNotBlank() }
+                    ?.let { "${e.javaClass.simpleName}: $it" } ?: e.javaClass.simpleName)
                 log.warn("Cursive JS Support: npm re-index failed", e)
             }
         }

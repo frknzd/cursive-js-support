@@ -20,8 +20,17 @@ object JsIndexLoader {
     private val log = logger<JsIndexLoader>()
     private val mapper = jacksonObjectMapper()
 
+    /**
+     * The configured browser index, falling back to the shipped default outside a running IDE —
+     * the settings service needs an Application, which plain JUnit tests of the bundled indexes
+     * don't have.
+     */
+    private fun browserSymbolsResourcePath(): String =
+        if (ApplicationManager.getApplication() == null) JsSupportSettings.State().browserSymbolsResourcePath
+        else JsSupportSettings.getInstance().state.browserSymbolsResourcePath
+
     fun loadBundledBrowser(index: JsSymbolIndex) {
-        val resourcePath = JsSupportSettings.getInstance().state.browserSymbolsResourcePath
+        val resourcePath = browserSymbolsResourcePath()
         val stream = JsIndexLoader::class.java.getResourceAsStream(resourcePath)
             ?: throw IllegalStateException("Pre-calculated index resource not found: $resourcePath")
 
@@ -65,6 +74,22 @@ object JsIndexLoader {
     fun loadBundledBun(index: JsSymbolIndex) = loadBundledEnvironment(index, "/js/bun-symbols.json.gz", "Bun")
 
     fun loadBundledDeno(index: JsSymbolIndex) = loadBundledEnvironment(index, "/js/deno-symbols.json.gz", "Deno")
+
+    /**
+     * Every bundled symbol set, in the order the index expects them.
+     *
+     * `JsSymbolIndex.publish` swaps the whole index, so anything a rebuild leaves out disappears
+     * from the editor. Both the initial load and the dependency watcher's re-index therefore go
+     * through this one function — a re-index that skipped, say, the Node stage would silently take
+     * `js/process` and the `fs` / `path` module exports away on the first `package.json` save.
+     */
+    fun loadAllBundled(index: JsSymbolIndex) {
+        loadBundledBrowser(index)
+        loadBundledGoog(index)
+        loadBundledNode(index)
+        loadBundledBun(index)
+        loadBundledDeno(index)
+    }
 
     fun loadNpmPackages(project: Project, index: JsSymbolIndex) {
         val settings = JsSupportSettings.getInstance().state

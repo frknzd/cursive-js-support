@@ -33,23 +33,22 @@ tool window to inspect detected builds and indexing health.
 ## Build
 
 ```
-./gradlew composedJar
-```
-
-The artifact lands in `build/libs/` (the composed jar bundles all plugin runtime dependencies — that's the file you install).
-
-Build an upload-ready JetBrains Marketplace ZIP for a specific IDE line:
-
-```
 ./gradlew buildPlugin -PplatformVersion=2026.1
 ./gradlew buildPlugin -PplatformVersion=2026.2
 ```
 
-The version-specific ZIPs land in `build/distributions/`.
+The version-specific, upload-ready JetBrains Marketplace ZIPs land in `build/distributions/`.
 
 ## Install
 
-In the IDE: `Settings → Plugins → ⚙ → Install Plugin From Disk…` and select the composed jar from `build/libs/`. Restart when prompted.
+In the IDE: `Settings → Plugins → ⚙ → Install Plugin From Disk…` and select the **ZIP** from
+`build/distributions/`. Restart when prompted.
+
+Install the ZIP, never the jar from `build/libs/`. The composed jar holds only the plugin's own
+classes and resources; the third-party libraries it links against (`edn-java`, Jackson) live
+beside it in the ZIP's `lib/` directory. A jar installed on its own loads far enough to look
+healthy and then dies with `NoClassDefFoundError: us/bpsm/edn/parser/Parsers` the moment it reads
+a `shadow-cljs.edn`, leaving every interop symbol unresolved.
 
 ## Develop
 
