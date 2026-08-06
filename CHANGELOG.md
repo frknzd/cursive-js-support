@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [1.5.1]
+
 ### Fixed
 - Indexing no longer wedges for the rest of the session when a stage throws an `Error` rather than
   an `Exception`. `JsIndexCoordinator` caught `Exception`, so a linkage error (most plausibly
