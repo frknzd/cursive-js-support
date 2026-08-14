@@ -58,9 +58,6 @@ open class JsInteropInspection : LocalInspectionTool() {
             val parentType = index.resolveJsChainType(segments.dropLast(1)) ?: return
             registerUnknownMember(symbol, parentType, segments.last(), index, holder)
         }
-        if (symbol.text.endsWith(".") && !index.isConstructorGlobal(global)) {
-            holder.registerProblem(symbol, "'$global' is not constructable", ProblemHighlightType.GENERIC_ERROR_OR_WARNING)
-        }
     }
 
     private fun inspectDirectCall(symbol: ClEditorSymbol, index: JsSymbolIndex, holder: ProblemsHolder) {
