@@ -4,6 +4,20 @@
 
 ## [Unreleased]
 
+### Fixed
+- Completion no longer performs npm workspace, `node_modules`, or IntelliJ JavaScript module-graph
+  discovery while holding an editor read action. Package-name discovery now serves immutable
+  snapshots and coalesces missing nested-project refreshes on the project coroutine scope, allowing
+  pending write actions such as Cursive's REPL reparse to proceed without multi-second UI freezes.
+
+### Changed
+- Completion prefers the published declaration index and cooperatively checks for cancellation
+  while emitting large result sets. Index construction now discovers dependencies once, rebuilds
+  inherited-member samples once per published snapshot, and caches repeated type-graph and
+  constructor queries.
+- ClojureScript namespace-alias caching now replaces the previous revision for a file rather than
+  retaining one cache entry per document modification.
+
 ## [1.5.2]
 
 ### Fixed

@@ -1,12 +1,36 @@
 package com.cursivejssupport.npm
 
 import com.cursivejssupport.settings.JsSupportSettings
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
 import java.nio.file.Files
 
 class NpmPackageResolverDiscoverWalkTest {
+
+    @Test
+    fun `cached discovery never scans and falls back to project snapshot`() {
+        val repo = Files.createTempDirectory("cached-disc").toFile()
+        try {
+            val root = File(repo, "project").apply { mkdirs() }
+            File(root, "package.json").writeText("""{"dependencies": {"react": "1.0.0"}}""")
+            val nested = File(root, "src/views.cljs").apply { parentFile.mkdirs(); writeText("(ns x)") }
+            val resolver = NpmPackageResolver(root, JsSupportSettings.State())
+
+            assertTrue("cache-only lookup must not perform discovery", resolver.cachedDependencyPackageNames().isEmpty())
+            val projectNames = resolver.discoverAllDependencyPackageNames()
+
+            assertEquals(projectNames, resolver.cachedDependencyPackageNames())
+            assertEquals(
+                "a nested file uses the ready project snapshot until its own refresh completes",
+                projectNames,
+                resolver.cachedDependencyPackageNames(nested.absolutePath),
+            )
+        } finally {
+            repo.deleteRecursively()
+        }
+    }
 
     @Test
     fun `discovers shadow npm-deps from ancestor of cljs file not at ide root`() {

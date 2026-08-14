@@ -41,7 +41,7 @@ object JsInteropNavigation {
         packageName: String,
         anchorFilePath: String?,
     ): PsiElement? {
-        val ioFile = NpmPackageResolver(project).typingsEntryFile(packageName, anchorFilePath) ?: return null
+        val ioFile = project.service<NpmPackageResolver>().typingsEntryFile(packageName, anchorFilePath) ?: return null
         val vf = LocalFileSystem.getInstance().findFileByPath(ioFile.absolutePath) ?: return null
         val psiFile = PsiManager.getInstance(project).findFile(vf) ?: return null
         if (psiFile.textLength == 0) return null

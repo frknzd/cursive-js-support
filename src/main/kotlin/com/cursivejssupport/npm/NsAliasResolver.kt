@@ -8,11 +8,14 @@ import java.util.concurrent.ConcurrentHashMap
 
 object NsAliasResolver {
 
-    private val aliasCache = ConcurrentHashMap<String, Map<String, NpmBinding>>()
+    private data class CacheEntry(val modificationStamp: Long, val aliases: Map<String, NpmBinding>)
+    private val aliasCache = ConcurrentHashMap<String, CacheEntry>()
 
     fun resolveAliases(file: PsiFile): Map<String, NpmBinding> {
-        val key = "${file.virtualFile?.path ?: file.name}:${file.modificationStamp}"
-        return aliasCache.computeIfAbsent(key) { computeAliases(file) }
+        val key = file.virtualFile?.path ?: file.name
+        val stamp = file.modificationStamp
+        aliasCache[key]?.takeIf { it.modificationStamp == stamp }?.let { return it.aliases }
+        return computeAliases(file).also { aliasCache[key] = CacheEntry(stamp, it) }
     }
 
     fun resolveAliasDeclaration(file: PsiFile, targetAlias: String): PsiElement? {

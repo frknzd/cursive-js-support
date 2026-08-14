@@ -6,6 +6,9 @@ import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.project.Project
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
@@ -29,6 +32,7 @@ internal data class NpmPackageRequest(val packageName: String, val subpath: Stri
 @Service(Service.Level.PROJECT)
 class NpmPackageResolver(
     private val project: Project?,
+    private val coroutineScope: CoroutineScope?,
 ) {
     private var testProjectDir: File? = null
     private var testSettings: JsSupportSettings.State? = null
@@ -39,26 +43,32 @@ class NpmPackageResolver(
     private val mapper = jacksonObjectMapper()
     private val nodeModules get() = File(projectDir, "node_modules")
 
-    constructor(projectDir: File, settings: JsSupportSettings.State) : this(null) {
+    constructor(projectDir: File, settings: JsSupportSettings.State) : this(null, null) {
         this.testProjectDir = projectDir
         this.testSettings = settings
     }
 
     private val packageDiscoveryCache = ConcurrentHashMap<String, Set<String>>()
+    private val packageDiscoveryInFlight = ConcurrentHashMap.newKeySet<String>()
 
     fun resolveAll(): List<ResolvedNpmPackage> {
         val roots = candidateNpmDiscoveryRoots(null)
-        val allNames = mutableSetOf<String>()
-        for (root in roots) {
-            allNames += discoverAllDependencyPackageNames(root.absolutePath)
-        }
+        // Discover once for the whole project. Calling discovery separately for each root used
+        // to make every pass rediscover the same workspace manifests and node_modules tree under
+        // a different cache key. Besides wasting startup time, it also meant the PROJECT_ROOT
+        // snapshot that completion needs was never populated by the initial index build.
+        val allNames = discoverAllDependencyPackageNames()
 
-        return allNames.mapNotNull { name ->
-            // Try to resolve the package by walking up from each discovery root
-            roots.asSequence()
-                .mapNotNull { root -> resolve(name, root.absolutePath) }
-                .firstOrNull()
-        }.also { log.info("Cursive JS Support: resolved types for ${it.size} npm packages") }
+        return allNames.asSequence()
+            .filterNot { it in JsBuiltInModules.allRequireStrings }
+            .mapNotNull { name ->
+                // Try to resolve the package by walking up from each discovery root
+                roots.asSequence()
+                    .mapNotNull { root -> resolve(name, root.absolutePath) }
+                    .firstOrNull()
+            }
+            .toList()
+            .also { log.info("Cursive JS Support: resolved types for ${it.size} npm packages") }
     }
 
     /**
@@ -67,9 +77,7 @@ class NpmPackageResolver(
      * every directory up the chain from [anchorFilePath] that contains any of those files (nested CLJS apps).
      */
     fun discoverAllDependencyPackageNames(anchorFilePath: String? = null): Set<String> {
-        val cacheKey = anchorFilePath ?: "PROJECT_ROOT"
-        // Invalidate cache if too old or just return cached
-        // For now, let's just return if present
+        val cacheKey = cacheKey(anchorFilePath)
         packageDiscoveryCache[cacheKey]?.let { return it }
 
         val names = mutableSetOf<String>()
@@ -88,8 +96,9 @@ class NpmPackageResolver(
             // Also include anything physically present in node_modules as a fallback
             val nm = File(root, "node_modules")
             if (nm.isDirectory) {
-                names += listInstalledPackages(nm)
-                names += discoverExportSubpaths(nm, names.toList())
+                val installed = listInstalledPackages(nm)
+                names += installed
+                names += discoverExportSubpaths(nm, installed)
                 hasCljsOrNpmSignal = true
             }
         }
@@ -114,6 +123,36 @@ class NpmPackageResolver(
         val result = names.filter { !it.startsWith("@types/") }.toSet()
         packageDiscoveryCache[cacheKey] = result
         return result
+    }
+
+    /**
+     * Non-blocking view used from completion/read actions. It never touches the filesystem.
+     * A file-specific snapshot wins for nested projects; until it is ready, the project-wide
+     * snapshot produced by the initial index build is a useful and safe fallback.
+     */
+    fun cachedDependencyPackageNames(anchorFilePath: String? = null): Set<String> =
+        packageDiscoveryCache[cacheKey(anchorFilePath)]
+            ?: packageDiscoveryCache[PROJECT_ROOT_CACHE_KEY]
+            ?: emptySet()
+
+    /**
+     * Warm a nested-project snapshot without extending the completion read action. Subsequent
+     * keystrokes see the result through [cachedDependencyPackageNames]. Duplicate requests are
+     * coalesced, and project disposal prevents queued work from starting.
+     */
+    fun requestDependencyPackageDiscovery(anchorFilePath: String?) {
+        val activeProject = project ?: return
+        val scope = coroutineScope ?: return
+        val cacheKey = cacheKey(anchorFilePath)
+        if (packageDiscoveryCache.containsKey(cacheKey) || !packageDiscoveryInFlight.add(cacheKey)) return
+
+        scope.launch(Dispatchers.IO) {
+            try {
+                if (!activeProject.isDisposed) discoverAllDependencyPackageNames(anchorFilePath)
+            } finally {
+                packageDiscoveryInFlight.remove(cacheKey)
+            }
+        }
     }
 
     fun clearCache() {
@@ -162,8 +201,16 @@ class NpmPackageResolver(
 
     private fun candidateNpmDiscoveryRoots(anchorFilePath: String?): List<File> {
         val seen = LinkedHashSet<File>()
-        if (!anchorFilePath.isNullOrBlank()) {
-            var d: File? = File(anchorFilePath).let { if (it.isFile) it.parentFile else it }
+        val walkFrom = if (!anchorFilePath.isNullOrBlank()) {
+            File(anchorFilePath).let { if (it.isFile) it.parentFile else it }
+        } else {
+            // The IDE may be opened on a nested directory of a larger monorepo. The project-wide
+            // snapshot still needs the dependency signals above that directory; using projectDir
+            // as the implicit anchor preserves that coverage while populating one cache entry.
+            projectDir
+        }
+        if (walkFrom.path.isNotBlank()) {
+            var d: File? = walkFrom
             var depth = 0
             while (d != null && depth++ < 64) {
                 if (npmSignalsPresent(d)) seen.add(d)
@@ -443,5 +490,11 @@ class NpmPackageResolver(
             add(requested)
         }
         return candidates.firstOrNull { File(baseDir, it).isFile }
+    }
+
+    private fun cacheKey(anchorFilePath: String?): String = anchorFilePath ?: PROJECT_ROOT_CACHE_KEY
+
+    private companion object {
+        const val PROJECT_ROOT_CACHE_KEY = "PROJECT_ROOT"
     }
 }

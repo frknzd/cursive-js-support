@@ -54,9 +54,33 @@ class JsSymbolIndex {
         val aliases: Map<String, String> = emptyMap(),
         val npmExportMembers: Map<String, Map<String, List<JsMember>>> = emptyMap(),
         val npmExportDocs: Map<String, Map<String, String>> = emptyMap(),
-    )
+    ) {
+        val typeGraph = JsTypeGraph(interfaces, aliases, { globals[it]?.type }, functions::containsKey)
+        val resolvedMembers = ConcurrentHashMap<String, Map<String, JsResolvedMember>>()
+        val constructorSignatures: Map<String, List<JsMember>> = buildMap {
+            for ((name, info) in globals) {
+                val declared = JsTypeRef.parse(info.type)
+                val signatures = typeGraph.constructSignatures(declared).ifEmpty {
+                    typeGraph.constructSignatures(JsTypeRef.parse(typeGraph.canonical(info.type)))
+                }
+                if (signatures.isNotEmpty()) put(name, signatures)
+            }
+        }
+        val npmPackageNames: Set<String> = npmExports.keys
+            .filterTo(linkedSetOf()) { it != "goog" && !it.startsWith("goog.") }
+        val googNamespaceNames: List<String> = npmExports.keys
+            .filter { it == "goog" || it.startsWith("goog.") }
+            .sorted()
+    }
 
     private val builder = Builder()
+    private val builderTypeGraph = JsTypeGraph(
+        builder.interfaces,
+        builder.aliases,
+        { builder.globals[it]?.type },
+        builder.functions::containsKey,
+    )
+    @Volatile private var memberSamplesDirty = true
     private val snapshot = AtomicReference(Snapshot())
     private val published get() = _loaded.get()
     private val globals get() = if (published) snapshot.get().globals else builder.globals
@@ -67,9 +91,6 @@ class JsSymbolIndex {
     private val npmExports get() = if (published) snapshot.get().npmExports else builder.npmExports
     /** Export name → TypeScript type name (from parsed .d.ts) for npm member completion. */
     private val npmExportTypes get() = if (published) snapshot.get().npmExportTypes else builder.npmExportTypes
-
-    /** Member name → up to N sample (declaring interface, first overload) for fast completion when receiver type is unknown. */
-    private val memberSamples get() = if (published) snapshot.get().memberSamples else builder.memberSamples
 
     /** Union/intersection type aliases (`BodyInit` → `"Blob|BufferSource|…"`) from the extractor. */
     private val aliases get() = if (published) snapshot.get().aliases else builder.aliases
@@ -98,14 +119,17 @@ class JsSymbolIndex {
         _loading.set(false)
     }
 
-    private fun freeze() = Snapshot(
-        builder.globals.toMap(), builder.interfaces.toMap(), builder.functions.toMap(),
-        builder.npmExports.mapValues { it.value.toMap() },
-        builder.npmExportTypes.mapValues { it.value.toMap() },
-        builder.memberSamples.mapValues { it.value.toList() }, builder.aliases.toMap(),
-        builder.npmExportMembers.mapValues { it.value.toMap() },
-        builder.npmExportDocs.mapValues { it.value.toMap() },
-    )
+    private fun freeze(): Snapshot {
+        ensureMemberSamples()
+        return Snapshot(
+            builder.globals.toMap(), builder.interfaces.toMap(), builder.functions.toMap(),
+            builder.npmExports.mapValues { it.value.toMap() },
+            builder.npmExportTypes.mapValues { it.value.toMap() },
+            builder.memberSamples.mapValues { it.value.toList() }, builder.aliases.toMap(),
+            builder.npmExportMembers.mapValues { it.value.toMap() },
+            builder.npmExportDocs.mapValues { it.value.toMap() },
+        )
+    }
 
     fun load(symbols: ParsedSymbols) {
         for ((name, iface) in symbols.interfaces) {
@@ -123,15 +147,16 @@ class JsSymbolIndex {
                 )
             }
         }
+        if (symbols.interfaces.isNotEmpty()) memberSamplesDirty = true
         for ((name, info) in symbols.variables) builder.globals[name] = info
         for ((name, overloads) in symbols.functions) builder.functions.merge(name, overloads) { a, b -> a + b }
         for ((name, target) in symbols.aliases) builder.aliases.putIfAbsent(name, target)
+        if (symbols.aliases.isNotEmpty()) memberSamplesDirty = true
         // Ambient external modules (declare module "fs" {...}) are registered as packages so
         // `(:require ["fs" :as fs])` resolves against the bundled Node/Bun/Deno symbol sets.
         for ((moduleName, moduleSymbols) in symbols.modules) {
             loadNpmPackage(moduleName, moduleSymbols, flattenExportAssignment = true)
         }
-        rebuildMemberSamples()
         if (published) snapshot.set(freeze())
     }
 
@@ -158,9 +183,10 @@ class JsSymbolIndex {
                     )
                 }
             }
-            rebuildMemberSamples()
+            memberSamplesDirty = true
         }
         for ((name, target) in symbols.aliases) builder.aliases.putIfAbsent(name, target)
+        if (symbols.aliases.isNotEmpty()) memberSamplesDirty = true
 
         val exports = mutableMapOf<String, JsLocation?>()
         val exportTypes = builder.npmExportTypes.computeIfAbsent(packageName) { ConcurrentHashMap() }
@@ -229,24 +255,35 @@ class JsSymbolIndex {
         }
     }
 
-    private fun rebuildMemberSamples() {
-        builder.memberSamples.clear()
-        for (typeName in builder.interfaces.keys) {
-            for ((memberName, resolved) in resolveMembers(typeName)) {
-                val overloads = resolved.overloads
-                val first = overloads.firstOrNull() ?: continue
-                val bucket = builder.memberSamples.computeIfAbsent(memberName) { mutableListOf() }
-                if (bucket.size < 8) {
-                    bucket.add(resolved.declaringType to first)
+    private fun ensureMemberSamples() {
+        if (!memberSamplesDirty) return
+        synchronized(builder.memberSamples) {
+            if (!memberSamplesDirty) return
+            builder.memberSamples.clear()
+            for (typeName in builder.interfaces.keys) {
+                for ((memberName, resolved) in builderTypeGraph.members(typeName)) {
+                    val first = resolved.overloads.firstOrNull() ?: continue
+                    val bucket = builder.memberSamples.computeIfAbsent(memberName) { mutableListOf() }
+                    if (bucket.size < 8) {
+                        bucket.add(resolved.declaringType to first)
+                    }
                 }
             }
+            memberSamplesDirty = false
         }
+    }
+
+    private fun currentMemberSamples(): Map<String, List<Pair<String, JsMember>>> {
+        if (published) return snapshot.get().memberSamples
+        ensureMemberSamples()
+        return builder.memberSamples
     }
 
     /**
      * For completion when receiver type is unknown: members whose name starts with [namePrefix], capped.
      */
     fun sampleMembersByNamePrefix(namePrefix: String, limit: Int = 220): List<Triple<String, String, JsMember>> {
+        val memberSamples = currentMemberSamples()
         val keys = if (namePrefix.isEmpty()) memberSamples.keys.sorted().take(limit)
         else memberSamples.keys.filter { it.startsWith(namePrefix) }.sorted().take(limit)
 
@@ -360,6 +397,7 @@ class JsSymbolIndex {
      * declarer anyway, so a single map lookup per interface suffices. Distance is always 0.
      */
     fun memberDeclarations(memberName: String): List<JsResolvedMember> {
+        val memberSamples = currentMemberSamples()
         // memberSamples buckets are capped, but the key set is complete — a cheap miss check.
         if (!memberSamples.containsKey(memberName)) return emptyList()
         return interfaces.entries.mapNotNull { (typeName, iface) ->
@@ -467,6 +505,7 @@ class JsSymbolIndex {
      * `new` members through the type graph, so the shape of the declaration doesn't matter.
      */
     fun globalConstructSignatures(name: String): List<JsMember> {
+        if (published) return snapshot.get().constructorSignatures[name].orEmpty()
         val declared = globals[name]?.type ?: return emptyList()
         return resolveConstructSignatures(JsTypeRef.parse(declared))
             .ifEmpty { resolveConstructSignatures(JsTypeRef.parse(canonicalType(declared))) }
@@ -478,9 +517,13 @@ class JsSymbolIndex {
     fun resolveGlobalType(name: String): String? = globals[name]?.type
     fun resolveInterface(typeName: String): JsInterface? = interfaces[typeName]
 
-    private fun typeGraph() = JsTypeGraph(interfaces, aliases, ::resolveGlobalType) { resolveFunctions(it) != null }
+    private fun typeGraph(): JsTypeGraph = if (published) snapshot.get().typeGraph else builderTypeGraph
 
-    fun resolveMembers(typeName: String): Map<String, JsResolvedMember> = typeGraph().members(typeName)
+    fun resolveMembers(typeName: String): Map<String, JsResolvedMember> {
+        if (!published) return builderTypeGraph.members(typeName)
+        val current = snapshot.get()
+        return current.resolvedMembers.computeIfAbsent(typeName, current.typeGraph::members)
+    }
 
     fun resolveMember(typeName: String, memberName: String): JsResolvedMember? =
         resolveMembers(typeName)[memberName]
@@ -510,6 +553,8 @@ class JsSymbolIndex {
         npmExports[packageName] ?: npmExports[packageName.removePrefix("node:")]
 
     fun npmExportNames(packageName: String): Collection<String> = npmExportsFor(packageName)?.keys ?: emptySet()
+    fun npmPackageNames(): Set<String> = if (published) snapshot.get().npmPackageNames else npmExports.keys
+        .filterTo(linkedSetOf()) { it != "goog" && !it.startsWith("goog.") }
     fun indexedNpmPackageCount(): Int = npmExports.keys.count { it != "goog" && !it.startsWith("goog.") }
 
     /** TypeScript type for an npm export (e.g. `default` → `React.ComponentType`), if known from typings. */
@@ -523,10 +568,10 @@ class JsSymbolIndex {
     /** JSDoc attached to an npm/goog export's declaration. */
     fun resolveNpmExportDoc(packageName: String, exportName: String): String? =
         npmExportDocs[packageName]?.get(exportName) ?: npmExportDocs[packageName.removePrefix("node:")]?.get(exportName)
-    fun hasMemberName(memberName: String): Boolean = memberSamples.containsKey(memberName)
+    fun hasMemberName(memberName: String): Boolean = currentMemberSamples().containsKey(memberName)
 
-    fun getGoogNamespaceNames(): List<String> =
-        npmExports.keys.filter { it == "goog" || it.startsWith("goog.") }.sorted()
+    fun getGoogNamespaceNames(): List<String> = if (published) snapshot.get().googNamespaceNames
+        else npmExports.keys.filter { it == "goog" || it.startsWith("goog.") }.sorted()
 
     fun isKnownGoogNamespace(name: String): Boolean =
         (name == "goog" || name.startsWith("goog.")) && npmExports.containsKey(name)

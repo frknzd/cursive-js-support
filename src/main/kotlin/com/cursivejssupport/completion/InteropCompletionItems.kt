@@ -30,6 +30,7 @@ import com.cursivejssupport.util.InteropChainCore
 import com.cursivejssupport.util.JsInteropChain
 import com.cursivejssupport.util.JsInteropPsi
 import com.intellij.openapi.components.service
+import com.intellij.openapi.progress.ProgressManager
 
 object InteropCompletionItems {
 
@@ -73,6 +74,7 @@ object InteropCompletionItems {
     fun emitNpmPackages(packages: Iterable<String>, result: CompletionResultSet): Int {
         var n = 0
         for (name in packages) {
+            ProgressManager.checkCanceled()
             result.addElement(npmPackageLookup(name))
             n++
         }
@@ -122,6 +124,7 @@ object InteropCompletionItems {
         } else dir
         val filePrefix = cleanPrefix.substringAfterLast('/')
         for (child in base.children) {
+            ProgressManager.checkCanceled()
             if (child.isDirectory) continue
             val name = child.name
             if (!name.endsWith(".js") && !name.endsWith(".mjs") && !name.endsWith(".cjs")) continue
@@ -159,6 +162,7 @@ object InteropCompletionItems {
         )
         var n = 0
         for (name in index.allGlobalNames()) {
+            ProgressManager.checkCanceled()
             val info = index.resolveGlobalInfo(name) ?: continue
             val env = JsEnvironment.fromWire(info.environment)
             if (!visible.contains(env)) continue
@@ -171,6 +175,7 @@ object InteropCompletionItems {
             n++
         }
         for (name in index.allFunctionNames()) {
+            ProgressManager.checkCanceled()
             // Function globals carry environment on their first overload; reuse the same filter.
             val overloads = index.resolveFunctions(name).orEmpty()
             val env = JsEnvironment.fromWire(overloads.firstOrNull()?.environment)
@@ -227,6 +232,7 @@ object InteropCompletionItems {
         // Receiver unknown — sample by member-name prefix.
         var n = 0
         for ((memberName, declaringType, member) in index.sampleMembersByNamePrefix(context.prefix)) {
+            ProgressManager.checkCanceled()
             if (context.asProperty && member.kind != "property") continue
             if (!context.asProperty && member.kind != "method") continue
             result.addElement(memberLookup(memberName, declaringType, member, dotForm = true))
@@ -245,6 +251,7 @@ object InteropCompletionItems {
         val members = index.resolveMembers(receiverType)
         var n = 0
         for ((memberName, resolved) in members) {
+            ProgressManager.checkCanceled()
             val first = resolved.overloads.firstOrNull() ?: continue
             if (asProperty != null) {
                 val want = if (asProperty) "property" else "method"
@@ -277,18 +284,23 @@ object InteropCompletionItems {
         result: CompletionResultSet,
     ): Int {
         var n = 0
-        val exports = file.project.service<InteropSemanticService>().exportNames(file, context.packageName)
-        if (exports.isNotEmpty()) {
-            exports.forEach { result.addElement(npmExportLookup(it, context.packageName)); n++ }
+        val indexedExports = index.npmExportNames(context.packageName)
+        if (indexedExports.isNotEmpty()) {
+            indexedExports.forEach {
+                ProgressManager.checkCanceled()
+                result.addElement(npmExportLookup(it, context.packageName)); n++
+            }
             return n
         }
 
         // Only the package's named exports are valid here. Keyword helpers (`:as`, `:refer`,
         // `:rename`, `:default`) belong outside the `:refer` vector and surface through the
-        // NsRequireKeyword slot instead.
-        for (exportName in index.npmExportNames(context.packageName)) {
-            result.addElement(npmExportLookup(exportName, context.packageName))
-            n++
+        // NsRequireKeyword slot instead. Live JavaScript PSI is a fallback for packages that the
+        // background declaration index could not represent; keeping it off the common path makes
+        // completion release its read action promptly.
+        for (exportName in file.project.service<InteropSemanticService>().exportNames(file, context.packageName)) {
+            ProgressManager.checkCanceled()
+            result.addElement(npmExportLookup(exportName, context.packageName)); n++
         }
         return n
     }
@@ -300,16 +312,18 @@ object InteropCompletionItems {
         result: CompletionResultSet,
     ): Int {
         var n = 0
-        val exports = file.project.service<InteropSemanticService>().exportNames(file, context.packageName)
-        if (exports.isNotEmpty()) {
-            exports.forEach { result.addElement(npmExportLookup(it, context.packageName)); n++ }
+        val indexedExports = index.npmExportNames(context.packageName)
+        if (indexedExports.isNotEmpty()) {
+            indexedExports.forEach {
+                ProgressManager.checkCanceled()
+                result.addElement(npmExportLookup(it, context.packageName)); n++
+            }
             return n
         }
 
-        if (!index.isLoaded) return 0
-        for (exportName in index.npmExportNames(context.packageName)) {
-            result.addElement(npmExportLookup(exportName, context.packageName))
-            n++
+        for (exportName in file.project.service<InteropSemanticService>().exportNames(file, context.packageName)) {
+            ProgressManager.checkCanceled()
+            result.addElement(npmExportLookup(exportName, context.packageName)); n++
         }
         return n
     }
@@ -320,34 +334,51 @@ object InteropCompletionItems {
         index: JsSymbolIndex,
         result: CompletionResultSet,
     ): Int {
-        // Prefer IntelliJ's own type evaluation when the JavaScript plugin is available — it
-        // understands packages whose typings the bundled parser can't fully digest.
+        // The immutable declaration snapshot answers the normal case without entering the
+        // JavaScript plugin's resolver while completion owns a read action.
+        if (index.isLoaded) {
+            var receiverType = index.resolveNpmExportType(context.packageName, context.exportName)
+            if (receiverType != null) {
+                for (segment in context.receiverSegments) {
+                    val currentType = receiverType ?: break
+                    val member = index.resolveMember(currentType, segment)?.first
+                    if (member == null) {
+                        receiverType = null
+                        break
+                    }
+                    receiverType = index.memberValueTypeName(member).ifEmpty { null }
+                    if (receiverType == null) break
+                }
+                if (receiverType != null) {
+                    val emitted = emitMembers(receiverType, index, result, asProperty = null)
+                    if (emitted > 0) return emitted
+                }
+            }
+        }
+
+        // Use IntelliJ's own type evaluation as the fallback for packages whose typings the
+        // background parser cannot digest.
         val descriptors = file.project.service<InteropSemanticService>().exportMembers(
             file, context.packageName, context.exportName, context.receiverSegments,
         )
         if (descriptors.isNotEmpty()) {
             var n = 0
             for (d in descriptors) {
+                ProgressManager.checkCanceled()
                 val member = JsMember(kind = d.kind, params = d.params, returns = d.returns, type = d.type, doc = d.doc)
                 result.addElement(memberLookup(d.name, context.packageName, member, dotForm = false))
                 n++
             }
             return n
         }
-
-        if (!index.isLoaded) return 0
-        var receiverType = index.resolveNpmExportType(context.packageName, context.exportName) ?: return 0
-        for (segment in context.receiverSegments) {
-            val member = index.resolveMember(receiverType, segment)?.first ?: return 0
-            receiverType = index.memberValueTypeName(member).ifEmpty { return 0 }
-        }
-        return emitMembers(receiverType, index, result, asProperty = null)
+        return 0
     }
 
     private fun emitGoogNamespaces(index: JsSymbolIndex, result: CompletionResultSet): Int {
         if (!index.isLoaded) return 0
         var n = 0
         for (name in index.getGoogNamespaceNames()) {
+            ProgressManager.checkCanceled()
             result.addElement(googNamespaceLookup(name))
             n++
         }
@@ -379,6 +410,7 @@ object InteropCompletionItems {
         val members = index.resolveMembers(receiverType)
         var n = 0
         for ((memberName, resolved) in members) {
+            ProgressManager.checkCanceled()
             val first = resolved.overloads.firstOrNull() ?: continue
             if (first.kind != "method" && first.kind != "property") continue
             result.addElement(chainStepMemberLookup(memberName, resolved.declaringType, first, kind))

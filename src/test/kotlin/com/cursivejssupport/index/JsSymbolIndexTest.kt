@@ -139,6 +139,17 @@ class JsSymbolIndexTest {
     }
 
     @Test
+    fun `package completion snapshot excludes goog namespaces`() {
+        val index = JsSymbolIndex()
+        val exported = ParsedSymbols(variables = mapOf("value" to JsVariableInfo(type = "string")))
+        index.loadNpmPackage("react", exported)
+        index.loadNpmPackage("goog.string", exported)
+        index.setLoaded(true)
+
+        assertEquals(setOf("react"), index.npmPackageNames())
+    }
+
+    @Test
     fun resolveNpmExportTypeFromVariablesAndFunctions() {
         val index = JsSymbolIndex()
         index.loadNpmPackage(

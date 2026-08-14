@@ -24,8 +24,15 @@ class InteropSemanticService {
     fun bindingDeclaration(file: PsiFile, name: String): PsiElement? = NsAliasResolver.resolveAliasDeclaration(file, name)
 
     fun packages(file: PsiFile): Set<String> = buildSet {
-        addAll(file.project.service<NpmPackageResolver>().discoverAllDependencyPackageNames(file.virtualFile?.path))
-        addAll(file.project.service<IntellijNpmResolutionService>().discoverPackages(file))
+        val resolver = file.project.service<NpmPackageResolver>()
+        val anchor = file.virtualFile?.path
+        // Completion runs under a read action. Filesystem/workspace discovery and the JavaScript
+        // plugin's module graph can both take seconds on a large node_modules tree, preventing a
+        // pending write action (including Cursive's REPL reparse) from running. Serve immutable
+        // snapshots here and refresh a missing nested-project snapshot in the background.
+        resolver.requestDependencyPackageDiscovery(anchor)
+        addAll(resolver.cachedDependencyPackageNames(anchor))
+        addAll(JsSymbolIndex.getInstance(file.project).npmPackageNames())
     }
 
     fun exports(file: PsiFile, packageName: String): List<SemanticExport> {
