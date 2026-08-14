@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [1.5.2]
+
 ### Fixed
 - Constructor syntax such as `(js/X.)` is no longer warned as non-constructable. TypeScript
   construct signatures do not reliably describe every value that ClojureScript can invoke with
