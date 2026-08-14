@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [1.6.0]
+
 ### Fixed
 - Completion no longer performs npm workspace, `node_modules`, or IntelliJ JavaScript module-graph
   discovery while holding an editor read action. Package-name discovery now serves immutable
