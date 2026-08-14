@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [1.6.1]
+
 ### Fixed
 - Starting a Cursive REPL no longer freezes the IDE while its long Java classpath command is
   processed for source hyperlinks. Console location detection now scans in linear time instead of
