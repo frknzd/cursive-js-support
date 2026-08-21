@@ -4,7 +4,7 @@
 # the release commit, and the `v*` tag that .github/workflows/release.yml listens for in step with
 # it. Nothing is pushed: run `git push --follow-tags` when you actually want the release to go out.
 [tool.bumpversion]
-current_version = "1.6.1"
+current_version = "1.6.2"
 # Pre-release versions are accepted so a bump from 1.4.0-beta.1 parses, but they are never produced
 # automatically — cut one explicitly with `--new-version 1.4.0-beta.1`, which the publishing
 # channel logic in build.gradle.kts routes to the `beta` channel.

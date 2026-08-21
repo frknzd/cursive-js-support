@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [1.6.2]
+
 ### Changed
 - ClojureScript JavaScript completion now uses expression-flow inference across constructor calls,
   dot forms, `..`, threading macros, and `doto`, ranks typed results above generic fallbacks, and
