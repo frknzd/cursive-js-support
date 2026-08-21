@@ -37,12 +37,13 @@ data class ParsedSourceMap(
         .asSequence()
         .filter { segment ->
             val original = segment.original
-            original != null && samePath(original.source, source) && original.line == line && original.column >= column
+            original != null && samePath(original.source, source) && original.line == line && original.column <= column
         }
-        .minByOrNull { it.original!!.column }
+        .maxByOrNull { it.original!!.column }
         ?: segments.asSequence().filter { segment ->
             val original = segment.original
-            original != null && samePath(original.source, source) && original.line >= line
+            original != null && samePath(original.source, source) &&
+                (original.line > line || original.line == line && original.column > column)
         }.minWithOrNull(compareBy<SourceMapSegment> { it.original!!.line }.thenBy { it.original!!.column })
 }
 

@@ -25,6 +25,15 @@ class SourceMapV3Test {
         assertEquals("/work/a.cljs", map.generatedToOriginal(3, 4)?.source)
     }
 
+    @Test fun `reverse mapping uses the closest preceding source column`() {
+        val map = SourceMapV3.parse(
+            """{"version":3,"sources":["a.cljs"],"names":[],"mappings":"AAAA,KAAK"}""",
+        )
+
+        assertEquals(0, map.originalToGenerated("a.cljs", 0, 3)?.generatedColumn)
+        assertEquals(5, map.originalToGenerated("a.cljs", 0, 5)?.generatedColumn)
+    }
+
     @Test fun `applies remote path mappings`() {
         val map = SourceMapV3.parse(
             """{"version":3,"sources":["webpack:///src/a.cljs"],"names":[],"mappings":"AAAA"}""",

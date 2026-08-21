@@ -24,6 +24,7 @@ class SourceMapRegistry(private val project: Project) {
         val roots = (CljsProjectModel.getInstance(project).profiles.flatMap { it.sourceMapRoots } + configuredRoots).distinct()
         val allFiles = roots.asSequence().map(::File).filter { it.isDirectory }
             .flatMap { it.walkTopDown().maxDepth(8).filter(File::isFile) }
+            .filter { it.extension in SOURCE_MAP_EXTENSIONS }
             .take(5_000).toList()
         val external = allFiles.filter { it.extension == "map" }.mapNotNull { file ->
             val key = file.absolutePath
@@ -62,6 +63,7 @@ class SourceMapRegistry(private val project: Project) {
         a.replace('\\', '/').endsWith("/${File(b).name}")
 
     companion object {
+        private val SOURCE_MAP_EXTENSIONS = setOf("map", "js", "mjs", "cjs")
         private val INLINE_MAP = Regex("sourceMappingURL=(data:[^\\s]+)")
     }
 }

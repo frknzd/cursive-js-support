@@ -3,7 +3,6 @@ package com.cursivejssupport.npm
 import com.cursivejssupport.project.CljsProjectModel
 import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.logger
-import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VfsUtil
 import com.intellij.openapi.vfs.VirtualFile
@@ -49,7 +48,7 @@ object RelativeModuleResolver {
         val model = project.service<CljsProjectModel>()
         for (profile in model.profiles) {
             for (src in profile.sourcePaths) {
-                val srcDir = resolveSourceDir(project, src, profile.workingDirectory) ?: continue
+                val srcDir = resolveSourceDir(src, profile.workingDirectory) ?: continue
                 resolveRelative(srcDir, normalized)?.let { return it }
             }
         }
@@ -84,7 +83,7 @@ object RelativeModuleResolver {
         return null
     }
 
-    private fun resolveSourceDir(project: Project, sourcePath: String, workingDirectory: String): VirtualFile? {
+    private fun resolveSourceDir(sourcePath: String, workingDirectory: String): VirtualFile? {
         val javaFile = File(sourcePath).let { if (it.isAbsolute) it else File(File(workingDirectory), sourcePath) }.normalize()
         return LocalFileSystem.getInstance().findFileByIoFile(javaFile)
     }
