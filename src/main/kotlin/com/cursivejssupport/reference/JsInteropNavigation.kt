@@ -1,6 +1,7 @@
 package com.cursivejssupport.reference
 
 import com.cursivejssupport.index.JsSymbolIndex
+import com.cursivejssupport.npm.NpmBindingKind
 import com.cursivejssupport.npm.NpmPackageResolver
 import com.cursivejssupport.semantic.InteropSemanticService
 import com.cursivejssupport.npm.NsAliasResolver
@@ -13,6 +14,7 @@ import com.intellij.openapi.components.service
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.psi.PsiComment
 import com.intellij.psi.PsiElement
+import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiManager
 import com.intellij.psi.PsiWhiteSpace
 import cursive.psi.api.ClList
@@ -23,6 +25,8 @@ import cursive.psi.impl.symbols.ClEditorSymbol
  * Shared navigation / resolve logic for go-to-declaration and the symbol reference contributor.
  */
 object JsInteropNavigation {
+
+    private data class AliasTargets(val matched: Boolean, val targets: Array<PsiElement>? = null)
 
     private fun unwrapMemberNavigationWrapper(element: PsiElement): PsiElement =
         (element as? JsMemberNavigationTarget)?.indexedLeaf ?: element
@@ -99,35 +103,12 @@ object JsInteropNavigation {
 
         val file = sourceElement.containingFile ?: return null
         val index = JsSymbolIndex.getInstance(project)
-        val aliases = NsAliasResolver.resolveAliases(file)
+        val slash = text.indexOf('/')
+        val namespace = if (slash >= 0) text.substring(0, slash) else text
+        val exportName = if (slash >= 0) text.substring(slash + 1) else null
 
-        val namespace = if (text.contains("/")) text.substringBefore("/") else text
-        val exportName = if (text.contains("/")) text.substringAfter("/") else null
-
-        if (aliases.containsKey(namespace)) {
-            val binding = aliases[namespace]!!
-            val packageName = binding.packageName
-            val anchorPath = file.virtualFile?.path
-            // Relative requires (`["./helper.js" :as helper]`) resolve to a physical .js file via
-            // RelativeModuleResolver; jump to the file (alias) or the named export (`helper/foo`).
-            if (binding.kind == com.cursivejssupport.npm.NpmBindingKind.RELATIVE) {
-                val npm = project.service<InteropSemanticService>()
-                if (exportName != null && exportName != namespace) {
-                    npm.exportDeclaration(file, packageName, exportName)?.let { return arrayOf(it) }
-                }
-                npm.exports(file, packageName).mapNotNull { it.declaration }.firstOrNull()?.let { return arrayOf(it) }
-                return null
-            }
-            if (exportName != null && exportName != namespace) {
-                resolveNpmAliasExportOrMemberTargets(project, index, packageName, exportName, file)?.let { return it }
-            } else {
-                val targets = mutableListOf<PsiElement>()
-
-                index.getNpmExportPsiElements(project, packageName, "default")?.let { targets.addAll(it) }
-                firstPsiFromPackageTypingsEntry(project, packageName, anchorPath)?.let { targets.add(it) }
-
-                if (targets.isNotEmpty()) return targets.toTypedArray()
-            }
+        resolveAliasTargets(project, index, file, namespace, exportName).let {
+            if (it.matched) return it.targets
         }
 
         // Direct goog.namespace/symbol access (no alias declaration required — goog is always available)
@@ -229,6 +210,36 @@ object JsInteropNavigation {
         }
 
         return null
+    }
+
+    private fun resolveAliasTargets(
+        project: Project,
+        index: JsSymbolIndex,
+        file: PsiFile,
+        namespace: String,
+        exportName: String?,
+    ): AliasTargets {
+        val binding = NsAliasResolver.resolveAliases(file)[namespace] ?: return AliasTargets(false)
+        val packageName = binding.packageName
+        if (binding.kind == NpmBindingKind.RELATIVE) {
+            val semantics = project.service<InteropSemanticService>()
+            val target = if (exportName != null && exportName != namespace) {
+                semantics.exportDeclaration(file, packageName, exportName)
+            } else {
+                semantics.exports(file, packageName).firstNotNullOfOrNull { it.declaration }
+            }
+            return AliasTargets(true, target?.let(::arrayOf))
+        }
+        if (exportName != null && exportName != namespace) {
+            val targets = resolveNpmAliasExportOrMemberTargets(project, index, packageName, exportName, file)
+            return AliasTargets(targets != null, targets)
+        }
+
+        val targets = buildList {
+            index.getNpmExportPsiElements(project, packageName, "default")?.let(::addAll)
+            firstPsiFromPackageTypingsEntry(project, packageName, file.virtualFile?.path)?.let(::add)
+        }
+        return AliasTargets(targets.isNotEmpty(), targets.takeIf { it.isNotEmpty() }?.toTypedArray())
     }
 
     private fun resolveNpmAliasExportOrMemberTargets(
@@ -380,41 +391,7 @@ object JsInteropNavigation {
             }
 
             text.startsWith(".") -> {
-                val memberName = text.removePrefix(".").removePrefix("-")
-                val list = symbol.parent as? ClList ?: return null
-                val children = list.children.filter { it !is PsiWhiteSpace && it !is PsiComment && it.text != "(" }
-                val receiver = children.getOrNull(1)
-
-                val typeName = JsResolveUtil.resolveType(receiver, index)
-                if (typeName != null) {
-                    val resolvedMember = index.resolveMember(typeName, memberName)
-                    val member = resolvedMember?.first
-                    if (member != null) {
-                        val phys = firstMemberPsi(project, index, typeName, memberName)
-                        JsSymbolPsiElement(
-                            symbol.manager, symbol.language, memberName, resolvedMember.declaringType, member.doc,
-                            member = member, navigationTarget = phys,
-                        )
-                    } else {
-                        val targets = index.getAnyMemberPsiElements(project, memberName, typeName) ?: return null
-                        val first = targets.firstOrNull() ?: return null
-                        val ifaceName = (first as? JsMemberNavigationTarget)?.declaringTypeName
-                        val memberDoc = ifaceName?.let { index.resolveMember(it, memberName)?.first?.doc }
-                        JsSymbolPsiElement(
-                            symbol.manager, symbol.language, memberName, ifaceName, memberDoc,
-                            navigationTarget = first,
-                        )
-                    }
-                } else {
-                    val targets = index.getAnyMemberPsiElements(project, memberName, null) ?: return null
-                    val first = targets.firstOrNull() ?: return null
-                    val ifaceName = (first as? JsMemberNavigationTarget)?.declaringTypeName
-                    val memberDoc = ifaceName?.let { index.resolveMember(it, memberName)?.first?.doc }
-                    JsSymbolPsiElement(
-                        symbol.manager, symbol.language, memberName, ifaceName, memberDoc,
-                        navigationTarget = first,
-                    )
-                }
+                resolveDotMemberSymbol(symbol, project, index, text)
             }
 
             namespace != null -> {
@@ -422,11 +399,11 @@ object JsInteropNavigation {
                 val aliases = NsAliasResolver.resolveAliases(file)
                 val binding = aliases[namespace]
                 val pkg = binding?.packageName
-                    ?: if (index.isKnownGoogNamespace(namespace)) namespace else null
+                    ?: namespace.takeIf(index::isKnownGoogNamespace)
                     ?: return null
                 val export = name ?: return null
                 // Relative require: resolve via the JS plugin's exported elements of the target file.
-                if (binding?.kind == com.cursivejssupport.npm.NpmBindingKind.RELATIVE) {
+                if (binding?.kind == NpmBindingKind.RELATIVE) {
                     val decl = symbol.project.service<InteropSemanticService>()
                         .exportDeclaration(file, pkg, export) ?: return null
                     return JsSymbolPsiElement(
@@ -469,6 +446,34 @@ object JsInteropNavigation {
                 )
             }
         }
+    }
+
+    private fun resolveDotMemberSymbol(
+        symbol: PsiElement,
+        project: Project,
+        index: JsSymbolIndex,
+        text: String,
+    ): PsiElement? {
+        val memberName = text.removePrefix(".").removePrefix("-")
+        val list = symbol.parent as? ClList ?: return null
+        val children = list.children.filter { it !is PsiWhiteSpace && it !is PsiComment && it.text != "(" }
+        val typeName = JsResolveUtil.resolveType(children.getOrNull(1), index)
+        val resolvedMember = typeName?.let { index.resolveMember(it, memberName) }
+        resolvedMember?.first?.let { member ->
+            return JsSymbolPsiElement(
+                symbol.manager, symbol.language, memberName, resolvedMember.declaringType, member.doc,
+                member = member,
+                navigationTarget = firstMemberPsi(project, index, typeName, memberName),
+            )
+        }
+
+        val first = index.getAnyMemberPsiElements(project, memberName, typeName)?.firstOrNull() ?: return null
+        val declaringType = (first as? JsMemberNavigationTarget)?.declaringTypeName
+        val memberDoc = declaringType?.let { index.resolveMember(it, memberName)?.first?.doc }
+        return JsSymbolPsiElement(
+            symbol.manager, symbol.language, memberName, declaringType, memberDoc,
+            navigationTarget = first,
+        )
     }
 
     private fun interopSymbolTextNamespaceName(symbol: PsiElement): Triple<String, String?, String?>? {

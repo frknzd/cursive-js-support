@@ -11,11 +11,8 @@ import com.intellij.codeInsight.completion.CompletionType
 import com.intellij.codeInsight.completion.PlainPrefixMatcher
 import com.intellij.openapi.components.service
 import com.intellij.patterns.PlatformPatterns
-import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
-import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.util.ProcessingContext
-import cursive.psi.api.ClList
 import kotlin.math.min
 
 /**
@@ -37,6 +34,34 @@ class InteropCompletionContributor : CompletionContributor() {
             PlatformPatterns.psiElement(),
             Provider(),
         )
+    }
+
+    override fun fillCompletionVariants(parameters: CompletionParameters, result: CompletionResultSet) {
+        val file = parameters.originalFile
+        if (!isClojureDialectFile(file)) {
+            super.fillCompletionVariants(parameters, result)
+            return
+        }
+        val caret = min(parameters.offset, parameters.editor.document.textLength)
+        val index = JsSymbolIndex.getInstance(file.project)
+        val aliases = NsAliasResolver.resolveAliases(file)
+        val knownGoogNamespaces = if (index.isLoaded) index.getGoogNamespaceNames().toHashSet() else emptySet()
+        val context = InteropContextDetector.detect(
+            parameters.editor.document.charsSequence,
+            caret,
+            aliases,
+            knownGoogNamespaces,
+        )
+
+        super.fillCompletionVariants(parameters, result)
+
+        if (InteropCompletionAuthority.owns(context, index, parameters.position)) {
+            // A proven JS receiver makes lexical vars, namespaces, and Cursive's global prototype
+            // sample syntactically irrelevant. Our provider has already emitted the complete typed
+            // member set; consuming the remainder removes noise without disabling Cursive in any
+            // unresolved or ordinary Clojure completion context.
+            result.stopHere()
+        }
     }
 
     private class Provider : CompletionProvider<CompletionParameters>() {
@@ -71,8 +96,7 @@ class InteropCompletionContributor : CompletionContributor() {
                 return
             }
 
-            val listAroundCaret = enclosingClList(parameters.position)
-            InteropCompletionItems.emit(context, file, index, result, listAroundCaret)
+            InteropCompletionItems.emit(context, file, index, result, parameters.position)
         }
 
     private fun emitNpmPackages(
@@ -98,11 +122,9 @@ class InteropCompletionContributor : CompletionContributor() {
             InteropCompletionItems.emitRelativeRequireFiles(file, context.prefix, result)
         }
 
-        private fun enclosingClList(element: PsiElement?): ClList? {
-            if (element == null) return null
-            return PsiTreeUtil.getParentOfType(element, ClList::class.java, false)
-        }
+    }
 
+    companion object {
         private fun isClojureDialectFile(file: PsiFile): Boolean {
             val n = file.name
             return n.endsWith(".cljs", ignoreCase = true) ||

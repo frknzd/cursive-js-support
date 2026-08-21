@@ -4,6 +4,20 @@
 
 ## [Unreleased]
 
+### Changed
+- ClojureScript JavaScript completion now uses expression-flow inference across constructor calls,
+  dot forms, `..`, threading macros, and `doto`, ranks typed results above generic fallbacks, and
+  limits unknown-receiver suggestions until the prefix is meaningful.
+- Typed interop member popups suppress Cursive's unrelated global and prototype candidates only
+  when the receiver type and indexed member set are authoritative. Cursive completion remains
+  available for lexical symbols, namespaces, `cljs.core`, and unresolved receivers.
+
+### Fixed
+- Qualified constructor expressions such as `(js/Date.)` now resolve to their instance type for
+  completion, navigation, and documentation.
+- npm declaration discovery and JavaScript interop navigation handle additional real-project
+  package layouts and PSI shapes.
+
 ## [1.6.1]
 
 ### Fixed

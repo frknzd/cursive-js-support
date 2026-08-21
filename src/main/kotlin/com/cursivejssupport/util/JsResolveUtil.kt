@@ -110,12 +110,24 @@ object JsResolveUtil {
         // 1. Constructor call (Fuse. ...) -> instance type
         if (element is ClList) {
             val head = getHead(element)
-            if (head is ClEditorSymbol) {
-                val ht = head.text ?: ""
+            if (head != null) {
+                // Qualified symbols may be split into several PSI nodes by Cursive. The list's
+                // first token is the stable semantic constructor head in both complete and
+                // partially edited code, independent of that internal representation.
+                val ht = element.text.orEmpty()
+                    .trimStart()
+                    .removePrefix("(")
+                    .trimStart()
+                    .takeWhile { !it.isWhitespace() && it != ')' }
                 if (ht.endsWith(".") && ht.length > 1 && !ht.startsWith(".")) {
-                    val constructorName = ht.removeSuffix(".")
+                    val constructorReference = ht.removeSuffix(".")
+                    // ClojureScript constructors may be qualified (`js/Date.`, `alias/Foo.`).
+                    // Keep the qualified spelling for npm binding resolution, but use the global
+                    // segment as the TypeScript index key. This is expression inference, so every
+                    // consumer (completion, navigation, docs, chained calls) benefits equally.
+                    val constructorName = constructorReference.removePrefix("js/")
                     val arguments = meaningfulChildren(element).drop(1).map { resolve(it, index, state)?.ref }
-                    val binding = head.containingFile?.let { CljsPsiTypeRules.npmBinding(it, constructorName) }
+                    val binding = head.containingFile?.let { CljsPsiTypeRules.npmBinding(it, constructorReference) }
                     if (binding != null && binding.kind in setOf(NpmBindingKind.REFER, NpmBindingKind.DEFAULT, NpmBindingKind.RELATIVE)) {
                         val export = binding.exportName ?: "default"
                         val descriptor = head.project.service<InteropSemanticService>()

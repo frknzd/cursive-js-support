@@ -1,5 +1,6 @@
 import org.jetbrains.changelog.Changelog
 import org.jetbrains.intellij.platform.gradle.TestFrameworkType
+import org.jetbrains.intellij.platform.gradle.tasks.PrepareTestTask
 
 plugins {
     id("org.jetbrains.kotlin.jvm")
@@ -110,7 +111,9 @@ dependencies {
             create("IU", platform.ideVersion)
         }
         testFramework(TestFrameworkType.Platform)
+        testFramework(TestFrameworkType.Plugin.Java)
         plugin("com.cursiveclojure.cursive", platform.cursiveVersion)
+        bundledPlugin("com.intellij.java")
         bundledPlugin("JavaScript")
         bundledPlugin("JavaScriptDebugger")
         bundledModule("intellij.platform.scriptDebugger.ui")
@@ -129,7 +132,18 @@ detekt {
 }
 
 tasks {
+    named<PrepareTestTask>("prepareTest") {
+        // IntelliJ 2026.2 bundles Kotlin debug metadata newer than the coroutine agent selected
+        // by Gradle plugin 2.16. The agent crashes platform-fixture startup; completion tests do
+        // not need coroutine stack instrumentation.
+        coroutinesJavaAgentFile.set(layout.buildDirectory.file("disabled-coroutines-javaagent.jar"))
+    }
+
     test {
+        // The IDE distribution supplies a coroutine debugger built for its bundled Kotlin.
+        // Instrumenting tests compiled with the project's Kotlin can otherwise fail application
+        // startup with a debug-metadata version mismatch before a platform fixture is created.
+        systemProperty("kotlinx.coroutines.debug", "off")
         inputs.files(
             "test-fixtures/npm-interop-corpus/package-lock.json",
             "test-fixtures/npm-interop-corpus/reference-report.cjs",

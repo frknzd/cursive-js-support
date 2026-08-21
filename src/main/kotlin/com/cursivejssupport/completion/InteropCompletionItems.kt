@@ -6,6 +6,7 @@ import com.cursivejssupport.parser.JsMember
 import com.cursivejssupport.util.JsResolveUtil
 import com.intellij.codeInsight.completion.CompletionResultSet
 import com.intellij.codeInsight.completion.InsertionContext
+import com.intellij.codeInsight.completion.PrioritizedLookupElement
 import com.intellij.codeInsight.lookup.LookupElement
 import com.intellij.codeInsight.lookup.LookupElementBuilder
 import com.intellij.psi.PsiElement
@@ -27,12 +28,21 @@ import com.cursivejssupport.semantic.InteropSemanticService
 import com.cursivejssupport.npm.NsAliasResolver
 import com.cursivejssupport.util.ChainKind
 import com.cursivejssupport.util.InteropChainCore
+import com.cursivejssupport.util.InteropChains
 import com.cursivejssupport.util.JsInteropChain
 import com.cursivejssupport.util.JsInteropPsi
 import com.intellij.openapi.components.service
 import com.intellij.openapi.progress.ProgressManager
 
 object InteropCompletionItems {
+
+    private const val TYPED_MEMBER_PRIORITY = 100.0
+    private const val COMMON_GLOBAL_PRIORITY = 90.0
+    private const val BROWSER_GLOBAL_PRIORITY = 80.0
+    private const val RUNTIME_GLOBAL_PRIORITY = 60.0
+    private const val UNKNOWN_RECEIVER_PRIORITY = 10.0
+    private const val UNKNOWN_RECEIVER_MIN_PREFIX = 2
+    private const val UNKNOWN_RECEIVER_LIMIT = 50
 
     fun emit(
         context: InteropCompletionContext,
@@ -54,7 +64,7 @@ object InteropCompletionItems {
         is InteropCompletionContext.NpmAliasExportMember -> emitNpmAliasExportMembers(context, file, index, result)
         is InteropCompletionContext.GoogNamespaceRequire -> emitGoogNamespaces(index, result)
         is InteropCompletionContext.GoogNamespaceName -> emitGoogNamespaces(index, result)
-        is InteropCompletionContext.ChainStepForm -> emitChainStepMembers(context, file, index, result)
+        is InteropCompletionContext.ChainStepForm -> emitChainStepMembers(context, file, index, result, listAroundCaret)
     }
 
     private fun emitNpmAliasNames(context: InteropCompletionContext.NpmAliasName, result: CompletionResultSet): Int {
@@ -171,7 +181,7 @@ object InteropCompletionItems {
             } else {
                 globalVariableLookup(name, info.type, env.badge)
             }
-            result.addElement(element)
+            result.addElement(prioritize(element, globalPriority(env)))
             n++
         }
         for (name in index.allFunctionNames()) {
@@ -180,7 +190,7 @@ object InteropCompletionItems {
             val overloads = index.resolveFunctions(name).orEmpty()
             val env = JsEnvironment.fromWire(overloads.firstOrNull()?.environment)
             if (!visible.contains(env)) continue
-            result.addElement(globalFunctionLookup(name, env.badge))
+            result.addElement(prioritize(globalFunctionLookup(name, env.badge), globalPriority(env)))
             n++
         }
         return n
@@ -206,10 +216,10 @@ object InteropCompletionItems {
         val resolution = if (receiver != null) JsResolveUtil.resolveTypeRef(receiver, index) else null
         if (!resolution?.effectiveSemanticMembers.isNullOrEmpty()) {
             var n = 0
-            for (descriptor in resolution!!.effectiveSemanticMembers) {
+            for (descriptor in resolution.effectiveSemanticMembers) {
                 val want = if (context.asProperty) "property" else "method"
                 if (descriptor.kind != want) continue
-                result.addElement(memberLookup(
+                result.addElement(prioritize(memberLookup(
                     descriptor.name,
                     resolution.name,
                     JsMember(
@@ -220,7 +230,7 @@ object InteropCompletionItems {
                         doc = descriptor.doc,
                     ),
                     dotForm = true,
-                ))
+                ), TYPED_MEMBER_PRIORITY))
                 n++
             }
             if (n > 0) return n
@@ -230,12 +240,20 @@ object InteropCompletionItems {
         }
         if (!index.isLoaded) return 0
         // Receiver unknown — sample by member-name prefix.
+        // A blank/one-character prefix produces a large, receiver-independent grab bag which
+        // obscures Cursive's lexical and namespace rows. Wait for enough intent and keep this
+        // explicitly low priority; invoking completion again still cannot make the receiver typed.
+        if (context.prefix.length < UNKNOWN_RECEIVER_MIN_PREFIX) return 0
         var n = 0
-        for ((memberName, declaringType, member) in index.sampleMembersByNamePrefix(context.prefix)) {
+        for ((memberName, declaringType, member) in
+            index.sampleMembersByNamePrefix(context.prefix, UNKNOWN_RECEIVER_LIMIT)) {
             ProgressManager.checkCanceled()
             if (context.asProperty && member.kind != "property") continue
             if (!context.asProperty && member.kind != "method") continue
-            result.addElement(memberLookup(memberName, declaringType, member, dotForm = true))
+            result.addElement(prioritize(
+                memberLookup(memberName, declaringType, member, dotForm = true),
+                UNKNOWN_RECEIVER_PRIORITY,
+            ))
             n++
         }
         return n
@@ -259,7 +277,10 @@ object InteropCompletionItems {
             } else {
                 if (first.kind != "method" && first.kind != "property") continue
             }
-            result.addElement(memberLookup(memberName, resolved.declaringType, first, dotForm))
+            result.addElement(prioritize(
+                memberLookup(memberName, resolved.declaringType, first, dotForm),
+                TYPED_MEMBER_PRIORITY,
+            ))
             n++
         }
         return n
@@ -390,14 +411,22 @@ object InteropCompletionItems {
         file: PsiFile,
         index: JsSymbolIndex,
         result: CompletionResultSet,
+        position: PsiElement?,
     ): Int {
         if (!index.isLoaded) return 0
         if (context.priorChain.isEmpty()) return 0
         val kind = context.kind
 
-        var receiverType = resolveRootToken(context.priorChain[0], file, index) ?: return 0
+        // Prefer the shared PSI expression-flow model. It understands local bindings, type hints,
+        // constructor expressions, `->>` receiver positions, doto root semantics, and prior
+        // member return types. The document model remains a recovery path while PSI is malformed.
+        val psiReceiverType = position?.let { InteropChains.stepContext(it, index)?.receiverType }
+        var receiverType = psiReceiverType
+            ?: resolveRootToken(context.priorChain[0], file, index)
+            ?: return 0
+        val resolvedFromPsi = psiReceiverType != null
         // `doto` / `cond->` steps always receive the root value — prior steps don't matter.
-        if (!kind.rootReceiver) {
+        if (!resolvedFromPsi && !kind.rootReceiver) {
             for (step in context.priorChain.drop(1)) {
                 val spec = InteropChainCore.parseStepToken(step, kind) ?: return 0
                 // `->>` list steps take their own first argument as receiver — not derivable
@@ -413,7 +442,10 @@ object InteropCompletionItems {
             ProgressManager.checkCanceled()
             val first = resolved.overloads.firstOrNull() ?: continue
             if (first.kind != "method" && first.kind != "property") continue
-            result.addElement(chainStepMemberLookup(memberName, resolved.declaringType, first, kind))
+            result.addElement(prioritize(
+                chainStepMemberLookup(memberName, resolved.declaringType, first, kind),
+                TYPED_MEMBER_PRIORITY,
+            ))
             n++
         }
         return n
@@ -465,6 +497,15 @@ object InteropCompletionItems {
             .withTailText(badge?.let { " ($it)" }.orEmpty())
             .withIcon(JsInteropCompletionIcons.forGlobalFunction())
             .withInsertHandler(CallHeadInsertHandler)
+
+    private fun globalPriority(environment: JsEnvironment): Double = when (environment) {
+        JsEnvironment.COMMON -> COMMON_GLOBAL_PRIORITY
+        JsEnvironment.BROWSER -> BROWSER_GLOBAL_PRIORITY
+        JsEnvironment.NODE, JsEnvironment.BUN, JsEnvironment.DENO -> RUNTIME_GLOBAL_PRIORITY
+    }
+
+    private fun prioritize(element: LookupElement, priority: Double): LookupElement =
+        PrioritizedLookupElement.withPriority(element, priority)
 
     private fun memberLookup(memberName: String, declaringType: String?, member: JsMember, dotForm: Boolean): LookupElement {
         val sig = if (member.kind == "method") {
@@ -561,9 +602,16 @@ object InteropCompletionItems {
      * Walks past whitespace / comments and the open paren.
      */
     private fun receiverForDotMember(listAroundCaret: PsiElement?): PsiElement? {
-        val list = listAroundCaret as? ClList ?: return null
-        val children = JsInteropPsi.meaningfulChildren(list)
-        return children.getOrNull(1)
+        var current: PsiElement? = listAroundCaret
+        while (current != null) {
+            if (current is ClList) {
+                val children = JsInteropPsi.meaningfulChildren(current)
+                val head = children.firstOrNull()?.text.orEmpty()
+                if (head.startsWith(".") && !head.startsWith("..")) return children.getOrNull(1)
+            }
+            current = current.parent
+        }
+        return null
     }
 
     private object KeywordInsertHandler : com.intellij.codeInsight.completion.InsertHandler<LookupElement> {

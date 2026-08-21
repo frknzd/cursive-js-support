@@ -77,6 +77,38 @@ class NpmPackageTypingsTest {
     }
 
     @Test
+    fun `commonjs and module exports prefer their matching declaration format`() {
+        val dir = Files.createTempDirectory("npm-typings").toFile()
+        try {
+            File(dir, "package.json").writeText(
+                """{"name":"x","exports":{".":{"import":"./index.mjs","require":"./index.cjs"}}}""",
+            )
+            listOf("index.mjs", "index.cjs", "index.d.ts", "index.d.mts", "index.d.cts").forEach {
+                File(dir, it).writeText("export {}\n")
+            }
+            assertEquals(
+                listOf("index.d.mts", "index.d.cts"),
+                NpmPackageTypings.typingsEntryRelativePaths(dir),
+            )
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `types field resolves extensionless files and directory indexes`() {
+        val dir = Files.createTempDirectory("npm-typings").toFile()
+        try {
+            File(dir, "package.json").writeText("""{"name":"x","types":"types"}""")
+            File(dir, "types").mkdirs()
+            File(dir, "types/index.d.ts").writeText("export declare const x: string\n")
+            assertEquals("types/index.d.ts", NpmPackageTypings.typingsEntryRelativePath(dir))
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `collects declarations from every custom condition`() {
         val dir = Files.createTempDirectory("npm-typings").toFile()
         try {
@@ -106,6 +138,25 @@ class NpmPackageTypingsTest {
             assertEquals(
                 setOf("index.mjs", "index.cjs", "browser.js"),
                 NpmPackageTypings.runtimeEntryRelativePaths(dir).toSet(),
+            )
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `runtime fields resolve extensionless files and directory indexes`() {
+        val dir = Files.createTempDirectory("npm-typings").toFile()
+        try {
+            File(dir, "package.json").writeText(
+                """{"name":"x","module":"module","main":"runtime"}""",
+            )
+            File(dir, "module.mjs").writeText("export {}\n")
+            File(dir, "runtime").mkdirs()
+            File(dir, "runtime/index.cjs").writeText("module.exports = {}\n")
+            assertEquals(
+                listOf("module.mjs", "runtime/index.cjs"),
+                NpmPackageTypings.runtimeEntryRelativePaths(dir),
             )
         } finally {
             dir.deleteRecursively()

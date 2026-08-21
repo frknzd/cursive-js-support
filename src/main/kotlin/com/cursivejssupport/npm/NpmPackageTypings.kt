@@ -37,10 +37,7 @@ internal object NpmPackageTypings {
             if (subpath.isNullOrBlank()) {
                 listOf("module", "main", "browser").forEach { addTextRuntimePath(root, it, pkgDir) }
             } else {
-                runtimeSuffixes.forEach { suffix ->
-                    normalize(subpath + suffix).takeIf { File(pkgDir, it).isFile }?.let(::add)
-                }
-                normalize("$subpath/index.js").takeIf { File(pkgDir, it).isFile }?.let(::add)
+                resolveRuntimeCandidate(pkgDir, normalize(subpath))?.let(::add)
             }
         }.toList() }
     }.getOrDefault(emptyList())
@@ -55,13 +52,13 @@ internal object NpmPackageTypings {
 
     private fun MutableSet<String>.addTextPath(root: JsonNode, field: String, pkgDir: File) {
         root.path(field).takeIf(JsonNode::isTextual)?.asText()?.let(::normalize)
-            ?.takeIf { File(pkgDir, it).isFile && isDeclaration(it) }
+            ?.let { resolveDeclarationCandidate(pkgDir, it) }
             ?.let(::add)
     }
 
     private fun MutableSet<String>.addTextRuntimePath(root: JsonNode, field: String, pkgDir: File) {
         root.path(field).takeIf(JsonNode::isTextual)?.asText()?.let(::normalize)
-            ?.takeIf { File(pkgDir, it).isFile && isRuntime(it) }
+            ?.let { resolveRuntimeCandidate(pkgDir, it) }
             ?.let(::add)
     }
 
@@ -93,7 +90,7 @@ internal object NpmPackageTypings {
 
     private fun collectRuntimePaths(node: JsonNode, pkgDir: File, output: MutableSet<String>) {
         when {
-            node.isTextual -> normalize(node.asText()).takeIf { isRuntime(it) && File(pkgDir, it).isFile }?.let(output::add)
+            node.isTextual -> resolveRuntimeCandidate(pkgDir, normalize(node.asText()))?.let(output::add)
             node.isArray -> node.forEach { collectRuntimePaths(it, pkgDir, output) }
             node.isObject -> node.fields().forEachRemaining { collectRuntimePaths(it.value, pkgDir, output) }
         }
@@ -104,7 +101,14 @@ internal object NpmPackageTypings {
         if (isDeclaration(relative)) return relative.takeIf { File(pkgDir, it).isFile }
         if (!isRuntime(relative)) return null
         val base = relative.substringBeforeLast('.')
-        return declarationSuffixes.asSequence().map { base + it }.firstOrNull { File(pkgDir, it).isFile }
+        val preferredSuffix = when (relative.substringAfterLast('.')) {
+            "cjs" -> ".d.cts"
+            "mjs" -> ".d.mts"
+            else -> ".d.ts"
+        }
+        return (listOf(preferredSuffix) + declarationSuffixes).asSequence().distinct()
+            .map { base + it }
+            .firstOrNull { File(pkgDir, it).isFile }
     }
 
     private fun directDeclarationPaths(pkgDir: File, subpath: String?): List<String> {
@@ -141,10 +145,19 @@ internal object NpmPackageTypings {
     }
 
     private fun resolveDeclarationCandidate(pkgDir: File, path: String): String? {
-        val candidates = mutableListOf(path)
+        if (isDeclaration(path)) return path.takeIf { File(pkgDir, it).isFile }
+        if (isRuntime(path)) return declarationFor(path, pkgDir)
+        val candidates = mutableListOf<String>()
         declarationSuffixes.mapTo(candidates) { path + it }
         declarationSuffixes.mapTo(candidates) { "$path/index$it" }
         return candidates.firstOrNull { File(pkgDir, it).isFile }
+    }
+
+    private fun resolveRuntimeCandidate(pkgDir: File, path: String): String? {
+        if (isRuntime(path) && File(pkgDir, path).isFile) return path
+        return runtimeSuffixes.asSequence().map { path + it }
+            .plus(runtimeSuffixes.asSequence().map { "$path/index$it" })
+            .firstOrNull { File(pkgDir, it).isFile }
     }
 
     private fun replaceStar(node: JsonNode, capture: String): JsonNode {
