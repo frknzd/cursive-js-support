@@ -72,11 +72,7 @@
             <language>Clojure</language>
             <className>com.cursivejssupport.inspection.AddJsTypeHintIntention</className>
             <category>ClojureScript</category>
-        </intentionAction>
-        <intentionAction>
-            <language>ClojureScript</language>
-            <className>com.cursivejssupport.inspection.AddJsTypeHintIntention</className>
-            <category>ClojureScript</category>
+            <descriptionDirectoryName>AddJsTypeHintIntention</descriptionDirectoryName>
         </intentionAction>
         <localInspection
                 language="ClojureScript"
